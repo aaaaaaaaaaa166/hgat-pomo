@@ -1,0 +1,21 @@
+instance=1 best_cost=93.762421
+  step=000 i=0 j=9 k=-1 dt=3.327719 truck=3.327719 drone=0.000000 late=0.000000 soc=1.000->1.000
+  step=001 i=9 j=4 k=-1 dt=3.279474 truck=3.279474 drone=0.000000 late=0.000000 soc=1.000->1.000
+  step=002 i=4 j=5 k=3 dt=5.221256 truck=5.221256 drone=4.139906 late=3.015895 soc=1.000->0.774
+  step=003 i=5 j=7 k=2 dt=3.815810 truck=3.815810 drone=3.251630 late=2.651787 soc=0.774->0.524
+  step=004 i=7 j=6 k=-1 dt=3.994921 truck=3.994921 drone=0.000000 late=0.776246 soc=0.524->1.000
+  step=005 i=6 j=10 k=-1 dt=5.722980 truck=5.722980 drone=0.000000 late=6.671853 soc=1.000->1.000
+  step=006 i=10 j=12 k=-1 dt=4.714653 truck=4.714653 drone=0.000000 late=21.927955 soc=1.000->1.000
+  step=007 i=12 j=8 k=-1 dt=7.618136 truck=7.618136 drone=0.000000 late=15.823980 soc=1.000->1.000
+  step=008 i=8 j=11 k=1 dt=6.089422 truck=6.089422 drone=5.921119 late=49.088386 soc=1.000->0.332
+
+instance=2 best_cost=123.177170
+  step=000 i=0 j=9 k=-1 dt=4.377232 truck=4.377232 drone=0.000000 late=0.000000 soc=1.000->1.000
+  step=001 i=9 j=7 k=-1 dt=3.883969 truck=3.883969 drone=0.000000 late=0.000000 soc=1.000->1.000
+  step=002 i=7 j=5 k=4 dt=5.130499 truck=5.130499 drone=4.885704 late=8.702669 soc=1.000->0.475
+  step=003 i=5 j=12 k=-1 dt=6.521955 truck=6.521955 drone=0.000000 late=2.843533 soc=0.475->1.000
+  step=004 i=12 j=3 k=10 dt=7.890430 truck=7.890430 drone=5.977510 late=22.115132 soc=1.000->0.761
+  step=005 i=3 j=6 k=-1 dt=4.261941 truck=4.261941 drone=0.000000 late=17.679984 soc=0.761->1.000
+  step=006 i=6 j=11 k=2 dt=6.317441 truck=6.317441 drone=3.150170 late=45.025125 soc=1.000->1.000
+  step=007 i=11 j=1 k=8 dt=7.024416 truck=7.024416 drone=4.870272 late=59.172135 soc=1.000->0.954
+

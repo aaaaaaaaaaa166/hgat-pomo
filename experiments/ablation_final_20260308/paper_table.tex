@@ -1,0 +1,16 @@
+\begin{table}[htbp]
+  \centering
+  \caption{Ablation Study Results (N=20, K=4)}
+  \label{tab:ablation_n20k4}
+  \begin{tabular}{lccc}
+    \toprule
+    Variant & Model Best (mean$\pm$std) & Random Best (mean$\pm$std) & Improve\% (mean$\pm$std) \\
+    \midrule
+    Full Model & 153.455 $\pm$ 0.921 & 323.464 $\pm$ 8.431 & 52.53 $\pm$ 1.06 \\
+    w/o Curriculum & 152.308 $\pm$ 2.453 & 314.155 $\pm$ 1.626 & 51.52 $\pm$ 0.89 \\
+    w/o SOC Constraint & 163.546 $\pm$ 2.834 & 296.227 $\pm$ 8.028 & 44.78 $\pm$ 0.59 \\
+    w/o Time Window & 45.756 $\pm$ 0.190 & 75.226 $\pm$ 1.857 & 39.13 $\pm$ 1.66 \\
+    w/o Traffic & 152.231 $\pm$ 0.536 & 319.971 $\pm$ 5.037 & 52.41 $\pm$ 0.62 \\
+    \bottomrule
+  \end{tabular}
+\end{table}

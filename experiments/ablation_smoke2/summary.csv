@@ -1,0 +1,2 @@
+variant,n_runs,train_sec_mean,train_sec_std,eval_sec_mean,eval_sec_std,model_best_mean_mean,model_best_mean_std,model_mean_mean_mean,model_mean_mean_std,model_worst_mean_mean,model_worst_mean_std,random_best_mean_mean,random_best_mean_std,random_mean_mean_mean,random_mean_mean_std,random_worst_mean_mean,random_worst_mean_std,improve_best_pct_mean,improve_best_pct_std
+full,1,5.697487,0.000000,4.036534,0.000000,50.108524,0.000000,62.661407,0.000000,75.214287,0.000000,44.599331,0.000000,44.956062,0.000000,45.312794,0.000000,-12.352637,0.000000

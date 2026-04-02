@@ -1,0 +1,3 @@
+variant,seed,train_sec,eval_sec,model_best_mean,model_mean_mean,model_worst_mean,random_best_mean,random_mean_mean,random_worst_mean,improve_best_pct,metrics_path,model_path
+full,0,6.247792,5.174401,130.879196,149.344971,167.810745,91.978134,104.597878,117.217621,-42.293815,D:\HGAT-POMO\experiments\ablation_smoke\metrics\full_seed0.json,D:\HGAT-POMO\experiments\ablation_smoke\models\full_seed0.pt
+no_traffic,0,5.392361,4.613541,141.885010,158.434219,174.983429,81.963104,96.288361,110.613617,-73.108390,D:\HGAT-POMO\experiments\ablation_smoke\metrics\no_traffic_seed0.json,D:\HGAT-POMO\experiments\ablation_smoke\models\no_traffic_seed0.pt

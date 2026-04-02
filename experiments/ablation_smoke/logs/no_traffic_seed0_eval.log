@@ -1,0 +1,15 @@
+COMMAND:
+C:\Users\86188\AppData\Local\Programs\Python\Python38\python.exe -m src.main_eval --N 12 --K 2 --n-instances 2 --hidden-dim 128 --heads 4 --dropout 0.0 --k-nn-orders 8 --encoder-layers 2 --tanh-clipping 10.0 --temperature 1.0 --coord-scale 10.0 --release-mode batches --n-batches 4 --max-release 10.0 --poisson-rate 1.0 --tw-mode relative --tw-slack-low 4.0 --tw-slack-high 14.0 --tw-active-prob 0.8 --vT 1.0 --vD 1.5 --QD 1.0 --B 6.0 --traffic-sigma 0.0 --lateness-penalty 0.5 --soc-init 1.0 --soc-reserve 0.1 --energy-per-dist 0.08 --recharge-rate 0.25 --no-store-traj --model-path D:\HGAT-POMO\experiments\ablation_smoke\models\no_traffic_seed0.pt --metrics-json D:\HGAT-POMO\experiments\ablation_smoke\metrics\no_traffic_seed0.json --traj-out D:\HGAT-POMO\experiments\ablation_smoke\metrics\no_traffic_seed0_trajs.txt
+
+OUTPUT:
+Using device: cpu
+
+=== Evaluation Summary (Objective Cost, smaller is better) ===
+MODEL best(K): mean=141.885, std=0.167, best(min)=141.718, worst(max)=142.052
+MODEL mean(K): mean=158.434, std=7.490, best(min)=150.944, worst(max)=165.924
+MODEL worst(K): mean=174.983, std=15.147, best(min)=159.836, worst(max)=190.130
+RAND  best(K): mean=81.963, std=32.889, best(min)=49.074, worst(max)=114.853
+RAND  mean(K): mean=96.288, std=20.209, best(min)=76.080, worst(max)=116.497
+RAND  worst(K): mean=110.614, std=7.528, best(min)=103.086, worst(max)=118.142
+Saved metrics json to D:\HGAT-POMO\experiments\ablation_smoke\metrics\no_traffic_seed0.json
+Total eval time: 0.48s

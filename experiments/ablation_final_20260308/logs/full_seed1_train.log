@@ -1,0 +1,14 @@
+COMMAND:
+C:\Users\86188\AppData\Local\Programs\Python\Python38\python.exe -m src.main_train --N 20 --K 4 --epochs 5 --batch-size 8 --lr 0.0001 --hidden-dim 128 --heads 4 --dropout 0.0 --k-nn-orders 8 --encoder-layers 2 --tanh-clipping 10.0 --temperature 1.0 --temperature-end 1.0 --entropy-coef 0.01 --entropy-coef-end 0.0 --coord-scale 10.0 --release-mode batches --n-batches 4 --max-release 10.0 --poisson-rate 1.0 --tw-mode relative --tw-slack-low 4.0 --tw-slack-high 14.0 --tw-active-prob 0.8 --vT 1.0 --vD 1.5 --QD 1.0 --B 6.0 --traffic-sigma 0.15 --lateness-penalty 0.5 --soc-init 1.0 --soc-reserve 0.1 --energy-per-dist 0.08 --recharge-rate 0.25 --use-curriculum --curriculum-start-n 10 --seed 1 --save-path D:\HGAT-POMO\experiments\ablation_final_20260308\models\full_seed1.pt
+
+OUTPUT:
+PyTorch version: 2.4.1+cpu
+Is CUDA available? False
+Using device: cpu
+policy param device: cpu
+[ep=0001] loss=3.3630 cost_mean=114.409 cost_best=65.097 entropy=9.407 temp=1.000 ent_coef=0.0100 N=10 B=8 K=4
+[ep=0002] loss=-26.3299 cost_mean=138.116 cost_best=65.111 entropy=12.278 temp=1.000 ent_coef=0.0075 N=12 B=8 K=4
+[ep=0003] loss=-45.6021 cost_mean=145.090 cost_best=89.378 entropy=15.124 temp=1.000 ent_coef=0.0050 N=15 B=8 K=4
+[ep=0004] loss=-61.8545 cost_mean=184.670 cost_best=129.442 entropy=19.107 temp=1.000 ent_coef=0.0025 N=18 B=8 K=4
+[ep=0005] loss=-64.3480 cost_mean=199.143 cost_best=117.950 entropy=17.862 temp=1.000 ent_coef=0.0000 N=20 B=8 K=4
+Saved to D:\HGAT-POMO\experiments\ablation_final_20260308\models\full_seed1.pt

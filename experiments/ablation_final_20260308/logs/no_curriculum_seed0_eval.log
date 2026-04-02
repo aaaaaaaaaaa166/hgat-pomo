@@ -1,0 +1,18 @@
+COMMAND:
+C:\Users\86188\AppData\Local\Programs\Python\Python38\python.exe -m src.main_eval --N 20 --K 4 --n-instances 30 --hidden-dim 128 --heads 4 --dropout 0.0 --k-nn-orders 8 --encoder-layers 2 --tanh-clipping 10.0 --temperature 1.0 --coord-scale 10.0 --release-mode batches --n-batches 4 --max-release 10.0 --poisson-rate 1.0 --tw-mode relative --tw-slack-low 4.0 --tw-slack-high 14.0 --tw-active-prob 0.8 --vT 1.0 --vD 1.5 --QD 1.0 --B 6.0 --traffic-sigma 0.15 --lateness-penalty 0.5 --soc-init 1.0 --soc-reserve 0.1 --energy-per-dist 0.08 --recharge-rate 0.25 --no-store-traj --model-path D:\HGAT-POMO\experiments\ablation_final_20260308\models\no_curriculum_seed0.pt --metrics-json D:\HGAT-POMO\experiments\ablation_final_20260308\metrics\no_curriculum_seed0.json --traj-out D:\HGAT-POMO\experiments\ablation_final_20260308\metrics\no_curriculum_seed0_trajs.txt
+
+OUTPUT:
+Using device: cpu
+[010/30] model_best=119.02 model_mean=143.32 | rand_best=284.61 rand_mean=380.42
+[020/30] model_best=162.64 model_mean=182.56 | rand_best=329.12 rand_mean=392.10
+[030/30] model_best=138.16 model_mean=157.90 | rand_best=350.28 rand_mean=400.84
+
+=== Evaluation Summary (Objective Cost, smaller is better) ===
+MODEL best(K): mean=154.918, std=26.747, best(min)=101.122, worst(max)=212.449
+MODEL mean(K): mean=181.840, std=24.200, best(min)=143.316, worst(max)=238.969
+MODEL worst(K): mean=212.821, std=29.711, best(min)=168.691, worst(max)=277.604
+RAND  best(K): mean=312.217, std=57.975, best(min)=228.491, worst(max)=450.363
+RAND  mean(K): mean=382.236, std=55.810, best(min)=287.307, worst(max)=496.072
+RAND  worst(K): mean=456.779, std=74.881, best(min)=330.706, worst(max)=699.828
+Saved metrics json to D:\HGAT-POMO\experiments\ablation_final_20260308\metrics\no_curriculum_seed0.json
+Total eval time: 21.66s
