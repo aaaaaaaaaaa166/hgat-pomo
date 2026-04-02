@@ -11,10 +11,10 @@ class _HeteroAttnBlock(nn.Module):
         super().__init__()
         convs = {
             ("truck", "t2o", "order"): TransformerConv(
-                (-1, -1), hidden_dim, heads=heads, edge_dim=2, dropout=dropout, concat=False
+                (-1, -1), hidden_dim, heads=heads, edge_dim=8, dropout=dropout, concat=False
             ),
             ("order", "o2t", "truck"): TransformerConv(
-                (-1, -1), hidden_dim, heads=heads, edge_dim=2, dropout=dropout, concat=False
+                (-1, -1), hidden_dim, heads=heads, edge_dim=8, dropout=dropout, concat=False
             ),
             ("drone", "d2o", "order"): TransformerConv(
                 (-1, -1), hidden_dim, heads=heads, edge_dim=2, dropout=dropout, concat=False
@@ -23,7 +23,7 @@ class _HeteroAttnBlock(nn.Module):
                 (-1, -1), hidden_dim, heads=heads, edge_dim=2, dropout=dropout, concat=False
             ),
             ("order", "o2o", "order"): TransformerConv(
-                (-1, -1), hidden_dim, heads=heads, edge_dim=3, dropout=dropout, concat=False
+                (-1, -1), hidden_dim, heads=heads, edge_dim=8, dropout=dropout, concat=False
             ),
         }
         self.hetero_conv = HeteroConv(convs, aggr="sum")
@@ -80,7 +80,7 @@ class LiteHGATEncoder(nn.Module):
 
         self.proj = nn.ModuleDict({
             "order": nn.Linear(11, hidden_dim),
-            "truck": nn.Linear(5, hidden_dim),
+            "truck": nn.Linear(6, hidden_dim),
             "drone": nn.Linear(6, hidden_dim),
         })
         self.blocks = nn.ModuleList([

@@ -13,14 +13,15 @@ def build_hgat_heterodata(env, obs: Dict[str, Any], k_nn_orders: int = 8) -> Tup
       - order: N+1 nodes (0 depot + N orders)
 
     Edges:
-      truck <-> order: edge_attr [dist(i,o), timeT(i,o)]
+      truck <-> order: edge_attr [road/static pairwise edge features]
       drone <-> order: edge_attr [dist(i,o), timeD(i,o)]
-      order -> order (o2o kNN): edge_attr [dist(a,b), timeT(a,b), timeD(a,b)]
+      order -> order (o2o kNN): edge_attr [road/static pairwise edge features]
     """
     t = float(obs["t"])
     i = int(obs["i"])
     served_np = obs["served"]  # numpy (N+1,)
     soc = float(obs.get("soc", float(env.cfg.soc_init)))
+    is_peak = float(obs.get("is_peak", 0.0))
 
     N = env.N
     M = N + 1
@@ -84,7 +85,9 @@ def build_hgat_heterodata(env, obs: Dict[str, Any], k_nn_orders: int = 8) -> Tup
     else:
         next_gap = 0.0
     next_gap_norm = torch.tensor([max(0.0, next_gap) / t_den], dtype=torch.float32)
-    x_truck = torch.cat([coord_n[i], t_norm, unserved_ratio, next_gap_norm]).view(1, -1)  # (1,5)
+    x_truck = torch.cat(
+        [coord_n[i], t_norm, unserved_ratio, next_gap_norm, torch.tensor([is_peak], dtype=torch.float32)]
+    ).view(1, -1)  # (1,6)
 
     # drone 节点：能力参数 + 当前电量状态
     vT = float(env.cfg.vT); vD = float(env.cfg.vD)
@@ -109,15 +112,15 @@ def build_hgat_heterodata(env, obs: Dict[str, Any], k_nn_orders: int = 8) -> Tup
     # ---- 动态星型边：从当前 i 指向所有节点 ----
     # 这部分依赖当前位置，每一步都要更新。
     dist_i = torch.from_numpy(env.dist_mat[i].copy()).float()  # (M,)
-    timeT_i = dist_i / float(env.cfg.vT)
     timeD_i = dist_i / float(env.cfg.vD)
+    truck_edge_attr_i = torch.from_numpy(env.get_dense_edge_attr()[i].copy()).float()  # (M,8)
 
     # edge_index from env cache (numpy -> torch once per step, small)
     data["truck", "t2o", "order"].edge_index = torch.from_numpy(env.edge_index_t2o).long()
-    data["truck", "t2o", "order"].edge_attr = torch.stack([dist_i, timeT_i], dim=1)  # (M,2)
+    data["truck", "t2o", "order"].edge_attr = truck_edge_attr_i  # (M,8)
 
     data["order", "o2t", "truck"].edge_index = torch.from_numpy(env.edge_index_o2t).long()
-    data["order", "o2t", "truck"].edge_attr = torch.stack([dist_i, timeT_i], dim=1)
+    data["order", "o2t", "truck"].edge_attr = truck_edge_attr_i
 
     data["drone", "d2o", "order"].edge_index = torch.from_numpy(env.edge_index_d2o).long()
     data["drone", "d2o", "order"].edge_attr = torch.stack([dist_i, timeD_i], dim=1)  # (M,2)

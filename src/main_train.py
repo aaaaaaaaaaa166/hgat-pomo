@@ -6,6 +6,7 @@
 
 # src/main_train.py
 from __future__ import annotations
+import gc
 import os
 import sys
 import random
@@ -93,6 +94,10 @@ def main():
     parser.add_argument("--entropy-coef", type=float, default=0.01)
     parser.add_argument("--entropy-coef-end", type=float, default=0.0)
     parser.add_argument("--save-path", type=str, default="policy.pt")
+    parser.add_argument("--checkpoint-every", type=int, default=0)
+    parser.add_argument("--edge-mode", type=str, default="static", choices=["static", "road"])
+    parser.add_argument("--time-dependent", action="store_true")
+    parser.add_argument("--peak-after-served-ratio", type=float, default=0.5)
 
     # data generation
     parser.add_argument("--coord-scale", type=float, default=10.0)
@@ -116,6 +121,15 @@ def main():
     parser.add_argument("--soc-reserve", type=float, default=0.10)
     parser.add_argument("--energy-per-dist", type=float, default=0.08)
     parser.add_argument("--recharge-rate", type=float, default=0.25)
+    parser.add_argument("--road-detour-factor", type=float, default=1.18)
+    parser.add_argument("--road-signal-density", type=float, default=0.006)
+    parser.add_argument("--road-turn-density", type=float, default=0.010)
+    parser.add_argument("--road-one-way-ratio", type=float, default=0.10)
+    parser.add_argument("--road-peak-factor", type=float, default=1.25)
+    parser.add_argument("--signal-penalty", type=float, default=0.05)
+    parser.add_argument("--turn-penalty", type=float, default=0.12)
+    parser.add_argument("--left-turn-penalty", type=float, default=0.08)
+    parser.add_argument("--u-turn-penalty", type=float, default=0.30)
 
     # curriculum over problem size
     parser.add_argument("--use-curriculum", action="store_true")
@@ -131,6 +145,7 @@ def main():
 
     device = choose_device()
     print("Using device:", device)
+    print(f"Edge mode: {args.edge_mode} | time_dependent={args.time_dependent}")
     if device.type == "cuda":
         print("CUDA device:", torch.cuda.get_device_name(0))
 
@@ -149,6 +164,18 @@ def main():
         soc_min_reserve=args.soc_reserve,
         energy_per_dist=args.energy_per_dist,
         recharge_rate=args.recharge_rate,
+        edge_mode=args.edge_mode,
+        time_dependent=args.time_dependent,
+        peak_after_served_ratio=args.peak_after_served_ratio,
+        road_detour_factor=args.road_detour_factor,
+        road_signal_density=args.road_signal_density,
+        road_turn_density=args.road_turn_density,
+        road_one_way_ratio=args.road_one_way_ratio,
+        road_peak_factor=args.road_peak_factor,
+        signal_penalty=args.signal_penalty,
+        turn_penalty=args.turn_penalty,
+        left_turn_penalty=args.left_turn_penalty,
+        u_turn_penalty=args.u_turn_penalty,
     )
 
     if device.type != "cpu":
@@ -246,6 +273,15 @@ def main():
             f"entropy={ent_mean:.3f} temp={cur_temp:.3f} ent_coef={cur_entropy_coef:.4f} "
             f"N={cur_N} B={args.batch_size} K={args.K}"
         )
+
+        if args.checkpoint_every > 0 and (ep % args.checkpoint_every == 0 or ep == args.epochs):
+            ckpt_path = f"{args.save_path}.ep{ep:04d}.pt"
+            torch.save(policy.state_dict(), ckpt_path)
+            print(f"Checkpoint saved to {ckpt_path}")
+
+        # Release per-epoch tensors aggressively to avoid long CPU runs accumulating memory.
+        del returns_b, logps_b, ents_b, b, adv, policy_loss, entropy_loss, loss
+        gc.collect()
 
     torch.save(policy.state_dict(), args.save_path)
     print(f"Saved to {args.save_path}")

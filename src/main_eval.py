@@ -18,6 +18,7 @@ from src.env.instance_gen import make_random_instance
 from src.env.td_env import TruckDroneRendezvousEnv, EnvConfig
 from src.models.policy import HGATPolicy
 from src.rl.pomo_rollout import pomo_rollout
+from src.baselines.local_search import choose_truck_next_local_search
 
 
 def _feasible_js(env: TruckDroneRendezvousEnv) -> np.ndarray:
@@ -102,13 +103,14 @@ def baseline_rollout(
     env: TruckDroneRendezvousEnv,
     K: int = 8,
     max_steps: int = 256,
-    mode: str = "random",  # random | truck_only | heuristic
+    mode: str = "random",  # random | truck_only | heuristic | local_search_truck
 ) -> np.ndarray:
     """
     Baseline rollout:
       - random: random feasible j and random feasible k/none
       - truck_only: nearest feasible j, always k=none
       - heuristic: EDD-like j + urgency-aware k
+      - local_search_truck: online truck-only replan with 2-opt improvement
     Return total objective cost for each of K trials.
     """
     costs = []
@@ -129,6 +131,9 @@ def baseline_rollout(
             elif mode == "heuristic":
                 j = _choose_j_edd(e, obs)
                 k = _choose_k_heuristic(e, obs, j)
+            elif mode == "local_search_truck":
+                j = choose_truck_next_local_search(e, obs)
+                k = e.K_NONE
             else:
                 raise ValueError(f"Unknown baseline mode: {mode}")
 
@@ -182,6 +187,9 @@ def main():
     parser.add_argument("--encoder-layers", type=int, default=2)
     parser.add_argument("--tanh-clipping", type=float, default=10.0)
     parser.add_argument("--temperature", type=float, default=1.0)
+    parser.add_argument("--edge-mode", type=str, default="static", choices=["static", "road"])
+    parser.add_argument("--time-dependent", action="store_true")
+    parser.add_argument("--peak-after-served-ratio", type=float, default=0.5)
 
     # data generation
     parser.add_argument("--coord-scale", type=float, default=10.0)
@@ -205,6 +213,15 @@ def main():
     parser.add_argument("--soc-reserve", type=float, default=0.10)
     parser.add_argument("--energy-per-dist", type=float, default=0.08)
     parser.add_argument("--recharge-rate", type=float, default=0.25)
+    parser.add_argument("--road-detour-factor", type=float, default=1.18)
+    parser.add_argument("--road-signal-density", type=float, default=0.006)
+    parser.add_argument("--road-turn-density", type=float, default=0.010)
+    parser.add_argument("--road-one-way-ratio", type=float, default=0.10)
+    parser.add_argument("--road-peak-factor", type=float, default=1.25)
+    parser.add_argument("--signal-penalty", type=float, default=0.05)
+    parser.add_argument("--turn-penalty", type=float, default=0.12)
+    parser.add_argument("--left-turn-penalty", type=float, default=0.08)
+    parser.add_argument("--u-turn-penalty", type=float, default=0.30)
 
     parser.add_argument("--metrics-json", type=str, default="")
     parser.add_argument("--traj-out", type=str, default="")
@@ -215,6 +232,7 @@ def main():
 
     device = torch.device("cpu")
     print("Using device:", device)
+    print(f"Edge mode: {args.edge_mode} | time_dependent={args.time_dependent}")
 
     max_steps = 5 * (args.N + 1)
     store_traj = not args.no_store_traj
@@ -234,6 +252,18 @@ def main():
         soc_min_reserve=args.soc_reserve,
         energy_per_dist=args.energy_per_dist,
         recharge_rate=args.recharge_rate,
+        edge_mode=args.edge_mode,
+        time_dependent=args.time_dependent,
+        peak_after_served_ratio=args.peak_after_served_ratio,
+        road_detour_factor=args.road_detour_factor,
+        road_signal_density=args.road_signal_density,
+        road_turn_density=args.road_turn_density,
+        road_one_way_ratio=args.road_one_way_ratio,
+        road_peak_factor=args.road_peak_factor,
+        signal_penalty=args.signal_penalty,
+        turn_penalty=args.turn_penalty,
+        left_turn_penalty=args.left_turn_penalty,
+        u_turn_penalty=args.u_turn_penalty,
     )
 
     policy = HGATPolicy(
@@ -253,6 +283,7 @@ def main():
     if args.extra_baselines:
         baseline_values["truck_only"] = {"best": [], "mean": [], "worst": []}
         baseline_values["heuristic"] = {"best": [], "mean": [], "worst": []}
+        baseline_values["local_search_truck"] = {"best": [], "mean": [], "worst": []}
 
     best_trajs_all = []
 
@@ -301,12 +332,16 @@ def main():
             if args.extra_baselines:
                 tcost = baseline_rollout(env, K=args.K, max_steps=max_steps, mode="truck_only")
                 hcost = baseline_rollout(env, K=args.K, max_steps=max_steps, mode="heuristic")
+                lcost = baseline_rollout(env, K=args.K, max_steps=max_steps, mode="local_search_truck")
                 baseline_values["truck_only"]["best"].append(float(tcost.min()))
                 baseline_values["truck_only"]["mean"].append(float(tcost.mean()))
                 baseline_values["truck_only"]["worst"].append(float(tcost.max()))
                 baseline_values["heuristic"]["best"].append(float(hcost.min()))
                 baseline_values["heuristic"]["mean"].append(float(hcost.mean()))
                 baseline_values["heuristic"]["worst"].append(float(hcost.max()))
+                baseline_values["local_search_truck"]["best"].append(float(lcost.min()))
+                baseline_values["local_search_truck"]["mean"].append(float(lcost.mean()))
+                baseline_values["local_search_truck"]["worst"].append(float(lcost.max()))
 
             if idx % 10 == 0:
                 msg = (
@@ -318,7 +353,8 @@ def main():
                 if args.extra_baselines:
                     msg += (
                         f" | truck_best={baseline_values['truck_only']['best'][-1]:.2f} "
-                        f"heur_best={baseline_values['heuristic']['best'][-1]:.2f}"
+                        f"heur_best={baseline_values['heuristic']['best'][-1]:.2f} "
+                        f"ls_best={baseline_values['local_search_truck']['best'][-1]:.2f}"
                     )
                 print(msg)
 

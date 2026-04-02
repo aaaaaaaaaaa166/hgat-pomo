@@ -1,26 +1,47 @@
 from __future__ import annotations
-from dataclasses import dataclass
-from typing import Dict, Any, Optional, Tuple
+
 import copy
+from dataclasses import dataclass
+from typing import Any, Dict, Optional, Tuple
+
 import numpy as np
+
+from src.graph.road_aware_features import (
+    IntersectionPenaltyConfig,
+    RoadAwareMatrices,
+    TimeBucketConfig,
+    build_proxy_road_aware_matrices,
+)
 
 
 @dataclass
 class EnvConfig:
-    vT: float = 1.0     # truck speed
-    vD: float = 1.5     # drone speed
-    QD: float = 1.0     # drone payload capacity
-    B: float = 6.0      # max drone flight time for (i->k->j) + sD
-    sT: float = 0.0     # truck service time at order node
-    sD: float = 0.0     # drone service time at order node
+    vT: float = 1.0
+    vD: float = 1.5
+    QD: float = 1.0
+    B: float = 6.0
+    sT: float = 0.0
+    sD: float = 0.0
     allow_wait: bool = True
     idle_to_next_release: bool = True
-    traffic_sigma: float = 0.0        # multiplicative noise std on truck travel time
-    lateness_penalty: float = 0.0     # cost per unit tardiness
-    soc_init: float = 1.0             # initial drone state-of-charge in [0,1]
-    soc_min_reserve: float = 0.1      # reserve SoC that must remain after sortie
-    energy_per_dist: float = 0.08     # SoC cost per drone flight distance
-    recharge_rate: float = 0.25       # SoC recovered per unit waiting time on truck
+    traffic_sigma: float = 0.0
+    lateness_penalty: float = 0.0
+    soc_init: float = 1.0
+    soc_min_reserve: float = 0.1
+    energy_per_dist: float = 0.08
+    recharge_rate: float = 0.25
+    edge_mode: str = "static"  # static | road
+    time_dependent: bool = False
+    peak_after_served_ratio: float = 0.5
+    road_detour_factor: float = 1.18
+    road_signal_density: float = 0.006
+    road_turn_density: float = 0.010
+    road_one_way_ratio: float = 0.10
+    road_peak_factor: float = 1.25
+    signal_penalty: float = 0.05
+    turn_penalty: float = 0.12
+    left_turn_penalty: float = 0.08
+    u_turn_penalty: float = 0.30
 
 
 class TruckDroneRendezvousEnv:
@@ -35,16 +56,17 @@ class TruckDroneRendezvousEnv:
     Dynamic orders: order c is available if t >= release[c]
     """
 
-    K_NONE = -1  # no-drone action
+    K_NONE = -1
 
     def __init__(
         self,
-        coord: np.ndarray,    # (N+1,2)
-        release: np.ndarray,  # (N+1,)
-        demand: np.ndarray,   # (N+1,)
-        due: Optional[np.ndarray] = None,  # (N+1,), np.inf means no deadline
+        coord: np.ndarray,
+        release: np.ndarray,
+        demand: np.ndarray,
+        due: Optional[np.ndarray] = None,
         cfg: Optional[EnvConfig] = None,
         seed: int = 0,
+        road_matrices: Optional[RoadAwareMatrices] = None,
     ):
         self.coord = np.asarray(coord, dtype=np.float32)
         self.release = np.asarray(release, dtype=np.float32)
@@ -60,13 +82,15 @@ class TruckDroneRendezvousEnv:
 
         self.N = self.coord.shape[0] - 1
         self.cfg = cfg or EnvConfig()
+        if self.cfg.edge_mode not in {"static", "road"}:
+            raise ValueError("edge_mode must be 'static' or 'road'")
         self.rng = np.random.default_rng(seed)
 
-        # dist_mat[a,b] = euclidean distance
         diff = self.coord[:, None, :] - self.coord[None, :, :]
         self.dist_mat = np.sqrt((diff * diff).sum(axis=-1) + 1e-12).astype(np.float32)
+        self.road_matrices = self._init_road_matrices(road_matrices)
+        self._dense_edge_attr: Optional[np.ndarray] = None
 
-        # cached star edges truck/drone <-> orders
         M = self.N + 1
         o_ids = np.arange(M, dtype=np.int64)
         t_ids = np.zeros(M, dtype=np.int64)
@@ -76,14 +100,38 @@ class TruckDroneRendezvousEnv:
         self.edge_index_d2o = np.stack([d_ids, o_ids], axis=0)
         self.edge_index_o2d = np.stack([o_ids, d_ids], axis=0)
 
-        # cached o2o kNN edges
         self._o2o_cache: Dict[int, Tuple[np.ndarray, np.ndarray]] = {}
 
         self.state: Dict[str, Any] = {}
         self.reset()
 
+    def _init_road_matrices(self, road_matrices: Optional[RoadAwareMatrices]) -> Optional[RoadAwareMatrices]:
+        if road_matrices is not None:
+            return road_matrices
+        if self.cfg.edge_mode != "road":
+            return None
+        penalty = IntersectionPenaltyConfig(
+            signal_penalty_sec=float(self.cfg.signal_penalty),
+            turn_penalty_sec=float(self.cfg.turn_penalty),
+            left_turn_penalty_sec=float(self.cfg.left_turn_penalty),
+            u_turn_penalty_sec=float(self.cfg.u_turn_penalty),
+        )
+        bucket = TimeBucketConfig(
+            offpeak_factor=1.0,
+            peak_factor=float(self.cfg.road_peak_factor),
+        )
+        return build_proxy_road_aware_matrices(
+            coords=self.coord,
+            avg_speed_kmph=max(1e-6, float(self.cfg.vT) * 3.6),
+            road_detour_factor=float(self.cfg.road_detour_factor),
+            signal_density=float(self.cfg.road_signal_density),
+            turn_density=float(self.cfg.road_turn_density),
+            one_way_ratio=float(self.cfg.road_one_way_ratio),
+            time_bucket=bucket,
+            penalty=penalty,
+        )
+
     def copy(self) -> "TruckDroneRendezvousEnv":
-        # share static instance data + caches, but independent state
         new_env = TruckDroneRendezvousEnv(
             coord=self.coord,
             release=self.release,
@@ -91,8 +139,10 @@ class TruckDroneRendezvousEnv:
             due=self.due,
             cfg=copy.deepcopy(self.cfg),
             seed=int(self.rng.integers(0, 10**9)),
+            road_matrices=self.road_matrices,
         )
         new_env.dist_mat = self.dist_mat
+        new_env._dense_edge_attr = self._dense_edge_attr
         new_env.edge_index_t2o = self.edge_index_t2o
         new_env.edge_index_o2t = self.edge_index_o2t
         new_env.edge_index_d2o = self.edge_index_d2o
@@ -107,10 +157,45 @@ class TruckDroneRendezvousEnv:
         }
         return new_env
 
-    # ---------- cached o2o edges ----------
+    def get_time_bucket(self, served: Optional[np.ndarray] = None) -> str:
+        if self.cfg.edge_mode != "road" or not self.cfg.time_dependent or self.N <= 0:
+            return "offpeak"
+        served_arr = self.state["served"] if served is None else served
+        served_ratio = float(served_arr[1:].sum()) / float(max(1, self.N))
+        return "peak" if served_ratio >= float(self.cfg.peak_after_served_ratio) else "offpeak"
+
+    def get_is_peak(self, served: Optional[np.ndarray] = None) -> float:
+        return 1.0 if self.get_time_bucket(served=served) == "peak" else 0.0
+
+    def get_dense_edge_attr(self) -> np.ndarray:
+        if self._dense_edge_attr is not None:
+            return self._dense_edge_attr
+
+        if self.road_matrices is not None:
+            self._dense_edge_attr = self.road_matrices.edge_attr().astype(np.float32)
+            return self._dense_edge_attr
+
+        dist = self.dist_mat.astype(np.float32)
+        time_t = dist / float(self.cfg.vT)
+        zeros = np.zeros_like(dist, dtype=np.float32)
+        ones = np.ones_like(dist, dtype=np.float32)
+        self._dense_edge_attr = np.stack(
+            [dist, time_t, time_t, zeros, zeros, zeros, zeros, ones],
+            axis=-1,
+        ).astype(np.float32)
+        return self._dense_edge_attr
+
+    def _truck_time_matrix(self, bucket: Optional[str] = None) -> np.ndarray:
+        dense = self.get_dense_edge_attr()
+        if self.cfg.edge_mode == "road":
+            selected_bucket = bucket or self.get_time_bucket()
+            cost_idx = 2 if selected_bucket == "peak" else 1
+            return dense[..., cost_idx]
+        return dense[..., 1]
+
     def get_o2o_edges(self, k_nn: int) -> Tuple[np.ndarray, np.ndarray]:
         """
-        return (edge_index (2,E), edge_attr (E,3)) in numpy (float32 for attr)
+        return (edge_index (2,E), edge_attr (E,8)) in numpy
         """
         k_nn = int(k_nn)
         if k_nn <= 0:
@@ -135,31 +220,22 @@ class TruckDroneRendezvousEnv:
         src = np.repeat(np.arange(M, dtype=np.int64), k)
         dst = nn.reshape(-1).astype(np.int64)
         edge_index = np.stack([src, dst], axis=0)
-
-        d_ab = self.dist_mat[src, dst].astype(np.float32)
-        edge_attr = np.stack(
-            [
-                d_ab,
-                d_ab / float(self.cfg.vT),
-                d_ab / float(self.cfg.vD),
-            ],
-            axis=1,
-        ).astype(np.float32)
+        dense = self.get_dense_edge_attr()
+        edge_attr = dense[src, dst].astype(np.float32)
 
         self._o2o_cache[k_nn] = (edge_index, edge_attr)
         return edge_index, edge_attr
 
-    # ---------- helpers ----------
     def _traffic_factor(self, i: int, j: int) -> float:
         if i == j or float(self.cfg.traffic_sigma) <= 0.0:
             return 1.0
         factor = self.rng.normal(loc=1.0, scale=float(self.cfg.traffic_sigma))
         return float(np.clip(factor, 0.5, 2.0))
 
-    def _tau_truck(self, i: int, j: int, apply_traffic: bool = False) -> float:
+    def _tau_truck(self, i: int, j: int, apply_traffic: bool = False, bucket: Optional[str] = None) -> float:
         if i == j:
             return 0.0
-        base = float(self.dist_mat[i, j]) / float(self.cfg.vT)
+        base = float(self._truck_time_matrix(bucket=bucket)[i, j])
         if apply_traffic:
             base *= self._traffic_factor(i, j)
         return base
@@ -193,14 +269,6 @@ class TruckDroneRendezvousEnv:
         return max(0.0, finish_t - due_t)
 
     def _drone_feasible(self, i: int, j: int, k: int, t: float, served: np.ndarray, soc: float) -> bool:
-        """判断当前状态下 (k, j) 的无人机派送是否可行。
-
-        约束包括：
-        - k 必须是“未服务且已释放”的订单
-        - 载重与航程时长约束
-        - 执行后 SoC 仍需高于安全余量
-        - 本实现不允许 k 与 j 是同一订单
-        """
         if served[k] == 1:
             return False
         if not self._is_released(k, t):
@@ -216,7 +284,6 @@ class TruckDroneRendezvousEnv:
             return False
         return True
 
-    # ---------- api ----------
     def reset(self) -> Dict[str, Any]:
         served = np.zeros((self.N + 1,), dtype=np.int8)
         soc0 = float(np.clip(float(self.cfg.soc_init), 0.0, 1.0))
@@ -229,14 +296,11 @@ class TruckDroneRendezvousEnv:
             "i": int(self.state["i"]),
             "served": self.state["served"].copy(),
             "soc": float(self.state["soc"]),
+            "time_bucket": self.get_time_bucket(),
+            "is_peak": self.get_is_peak(),
         }
 
     def get_masks(self, j: Optional[int] = None) -> Dict[str, Any]:
-        """返回动作 mask。
-
-        - 不传 `j`：仅返回卡车可选目的地；
-        - 传入 `j`：额外返回该 j 下无人机可选 k。
-        """
         t = float(self.state["t"])
         i = int(self.state["i"])
         served = self.state["served"]
@@ -253,7 +317,6 @@ class TruckDroneRendezvousEnv:
             for node in feasible_orders:
                 truck_mask[node] = 1
         else:
-            # 没有可服务订单时：允许回仓库，且可原地等待（若配置允许）。
             truck_mask[0] = 1
             if self.cfg.allow_wait:
                 truck_mask[i] = 1
@@ -272,16 +335,12 @@ class TruckDroneRendezvousEnv:
         return {"truck_mask": truck_mask, "drone_mask": drone_mask, "k_none_feasible": True}
 
     def step(self, action: Tuple[int, int]) -> Tuple[Dict[str, Any], float, bool, Dict[str, Any]]:
-        """
-        action = (k, j)
-          k in [1..N] or K_NONE(-1)
-          j in [0..N] (order/depot only)
-        """
         k, j = action
         t = float(self.state["t"])
         i = int(self.state["i"])
         served = self.state["served"].copy()
         soc = float(self.state["soc"])
+        time_bucket = self.get_time_bucket(served=served)
 
         truck_mask = self.get_masks()["truck_mask"]
         if truck_mask[j] == 0:
@@ -293,7 +352,7 @@ class TruckDroneRendezvousEnv:
             if not self._drone_feasible(i=i, j=j, k=k, t=t, served=served, soc=soc):
                 raise ValueError(f"Infeasible k={k} for (i={i}, j={j}, t={t})")
 
-        travel_T = self._tau_truck(i, j, apply_traffic=True)
+        travel_T = self._tau_truck(i, j, apply_traffic=True, bucket=time_bucket)
         service_T = float(self.cfg.sT) if (j != 0 and served[j] == 0 and self._is_released(j, t)) else 0.0
         truck_time = travel_T + service_T
 
@@ -304,10 +363,8 @@ class TruckDroneRendezvousEnv:
             drone_time = self._tau_drone(i, k, j) + float(self.cfg.sD)
             energy_use = self._drone_energy(i, k, j)
 
-        # 卡车与无人机并行执行，单步耗时由较慢者决定。
         dt = max(truck_time, drone_time)
         if dt == 0.0 and self.cfg.idle_to_next_release:
-            # 事件驱动快进到下一次订单释放，避免零时长循环。
             nr = self._next_release_time(t, served)
             if nr is not None:
                 dt = max(0.0, nr - t)
@@ -330,18 +387,17 @@ class TruckDroneRendezvousEnv:
             soc_after = soc
             recharge_time = dt
         else:
-            # 无人机仅在会合后等待卡车的时间里充电。
             soc_after = max(0.0, soc - energy_use)
             recharge_time = max(0.0, dt - drone_time)
         soc_next = min(1.0, soc_after + float(self.cfg.recharge_rate) * recharge_time)
 
-        # 奖励定义：时间成本取负，并叠加迟到惩罚。
         penalty = float(self.cfg.lateness_penalty) * float(lateness)
         reward = -float(dt) - penalty
         done = bool(served[1:].sum() == self.N)
 
         self.state = {"t": t_next, "i": i_next, "served": served, "soc": soc_next}
 
+        dense = self.get_dense_edge_attr()
         info = {
             "dt": float(dt),
             "truck_time": float(truck_time),
@@ -354,5 +410,13 @@ class TruckDroneRendezvousEnv:
             "i": int(i),
             "j": int(j),
             "k": int(k),
+            "time_bucket": time_bucket,
+            "edge_mode": self.cfg.edge_mode,
+            "road_distance": float(dense[i, j, 0]),
+            "signal_count": float(dense[i, j, 3]),
+            "turn_count": float(dense[i, j, 4]),
+            "left_turn_count": float(dense[i, j, 5]),
+            "u_turn_count": float(dense[i, j, 6]),
+            "one_way_factor": float(dense[i, j, 7]),
         }
         return self.get_obs(), reward, done, info

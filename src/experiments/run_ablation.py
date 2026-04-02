@@ -125,6 +125,9 @@ def main() -> None:
     parser.add_argument("--temperature-end", type=float, default=1.0)
     parser.add_argument("--entropy-coef", type=float, default=0.01)
     parser.add_argument("--entropy-coef-end", type=float, default=0.0)
+    parser.add_argument("--edge-mode", type=str, default="static", choices=["static", "road"])
+    parser.add_argument("--time-dependent", action="store_true")
+    parser.add_argument("--peak-after-served-ratio", type=float, default=0.5)
 
     # data generation
     parser.add_argument("--coord-scale", type=float, default=10.0)
@@ -148,6 +151,15 @@ def main() -> None:
     parser.add_argument("--soc-reserve", type=float, default=0.10)
     parser.add_argument("--energy-per-dist", type=float, default=0.08)
     parser.add_argument("--recharge-rate", type=float, default=0.25)
+    parser.add_argument("--road-detour-factor", type=float, default=1.18)
+    parser.add_argument("--road-signal-density", type=float, default=0.006)
+    parser.add_argument("--road-turn-density", type=float, default=0.010)
+    parser.add_argument("--road-one-way-ratio", type=float, default=0.10)
+    parser.add_argument("--road-peak-factor", type=float, default=1.25)
+    parser.add_argument("--signal-penalty", type=float, default=0.05)
+    parser.add_argument("--turn-penalty", type=float, default=0.12)
+    parser.add_argument("--left-turn-penalty", type=float, default=0.08)
+    parser.add_argument("--u-turn-penalty", type=float, default=0.30)
 
     args = parser.parse_args()
 
@@ -183,6 +195,9 @@ def main() -> None:
         "temperature_end": args.temperature_end,
         "entropy_coef": args.entropy_coef,
         "entropy_coef_end": args.entropy_coef_end,
+        "edge_mode": args.edge_mode,
+        "time_dependent": args.time_dependent,
+        "peak_after_served_ratio": args.peak_after_served_ratio,
         "coord_scale": args.coord_scale,
         "release_mode": args.release_mode,
         "n_batches": args.n_batches,
@@ -202,6 +217,15 @@ def main() -> None:
         "soc_reserve": args.soc_reserve,
         "energy_per_dist": args.energy_per_dist,
         "recharge_rate": args.recharge_rate,
+        "road_detour_factor": args.road_detour_factor,
+        "road_signal_density": args.road_signal_density,
+        "road_turn_density": args.road_turn_density,
+        "road_one_way_ratio": args.road_one_way_ratio,
+        "road_peak_factor": args.road_peak_factor,
+        "signal_penalty": args.signal_penalty,
+        "turn_penalty": args.turn_penalty,
+        "left_turn_penalty": args.left_turn_penalty,
+        "u_turn_penalty": args.u_turn_penalty,
         "use_curriculum": bool(args.use_curriculum),
         "curriculum_start_n": args.curriculum_start_n,
     }
@@ -216,6 +240,9 @@ def main() -> None:
         "encoder_layers": args.encoder_layers,
         "tanh_clipping": args.tanh_clipping,
         "temperature": args.temperature,
+        "edge_mode": args.edge_mode,
+        "time_dependent": args.time_dependent,
+        "peak_after_served_ratio": args.peak_after_served_ratio,
         "coord_scale": args.coord_scale,
         "release_mode": args.release_mode,
         "n_batches": args.n_batches,
@@ -235,6 +262,15 @@ def main() -> None:
         "soc_reserve": args.soc_reserve,
         "energy_per_dist": args.energy_per_dist,
         "recharge_rate": args.recharge_rate,
+        "road_detour_factor": args.road_detour_factor,
+        "road_signal_density": args.road_signal_density,
+        "road_turn_density": args.road_turn_density,
+        "road_one_way_ratio": args.road_one_way_ratio,
+        "road_peak_factor": args.road_peak_factor,
+        "signal_penalty": args.signal_penalty,
+        "turn_penalty": args.turn_penalty,
+        "left_turn_penalty": args.left_turn_penalty,
+        "u_turn_penalty": args.u_turn_penalty,
     }
     if args.eval_no_store_traj:
         base_eval["no_store_traj"] = True

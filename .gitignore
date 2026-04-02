@@ -1,0 +1,6 @@
+__pycache__/
+*.py[cod]
+experiments/smoke_checks_20260402/
+experiments/*/models/*.pt
+experiments/*/logs/*.log
+experiments/*/metrics/*trajs*.txt
