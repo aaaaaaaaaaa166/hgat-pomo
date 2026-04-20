@@ -79,7 +79,7 @@ class LiteHGATEncoder(nn.Module):
         super().__init__()
 
         self.proj = nn.ModuleDict({
-            "order": nn.Linear(11, hidden_dim),
+            "order": nn.Linear(12, hidden_dim),
             "truck": nn.Linear(6, hidden_dim),
             "drone": nn.Linear(6, hidden_dim),
         })

@@ -1,0 +1,2 @@
+epoch,train_score,train_loss,val_no_aug_avg_cost,val_aug_avg_cost
+1,140.25641250610352,-14.800134658813477,95.30888366699219,95.30888366699219

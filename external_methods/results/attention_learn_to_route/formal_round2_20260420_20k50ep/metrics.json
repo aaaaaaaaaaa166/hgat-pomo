@@ -1,0 +1,43 @@
+{
+  "method": "attention_learn_to_route",
+  "problem": "static_cvrp",
+  "dataset_protocol": "external_methods/data/open_cvrplib_n30_20k/protocol.json",
+  "run_config": {
+    "repo_dir": "external_methods/repos/attention-learn-to-route",
+    "train_dataset": "external_methods/data/open_cvrplib_n30_20k/train/attention_learn_to_route/dataset.pkl",
+    "val_dataset": "external_methods/data/open_cvrplib_n30_20k/val/attention_learn_to_route/dataset.pkl",
+    "test_dataset": "external_methods/data/open_cvrplib_n30_20k/test/attention_learn_to_route/dataset.pkl",
+    "output_dir": "external_methods/results/attention_learn_to_route/formal_round2_20260420_20k50ep",
+    "device": "cpu",
+    "seed": 1234,
+    "graph_size": 30,
+    "train_size": 20000,
+    "val_size": 2000,
+    "test_size": 2000,
+    "batch_size": 256,
+    "eval_batch_size": 256,
+    "epochs": 50,
+    "lr_model": 0.0001,
+    "baseline": "exponential",
+    "exp_beta": 0.8,
+    "model": "attention",
+    "problem": "cvrp",
+    "embedding_dim": 128,
+    "hidden_dim": 128,
+    "n_encode_layers": 3,
+    "tanh_clipping": 10.0,
+    "normalization": "batch",
+    "init_model": "",
+    "resume_checkpoint": "external_methods/results/attention_learn_to_route/formal_round2_20260420_20k50ep/checkpoints/epoch-19.pt"
+  },
+  "best_epoch": 49,
+  "best_val_cost": 87.3285903930664,
+  "test_avg_cost": 83.75250244140625,
+  "test_std_cost": 8.982380867004395,
+  "test_num_instances": 2000,
+  "files": {
+    "history_csv": "external_methods/results/attention_learn_to_route/formal_round2_20260420_20k50ep/history.csv",
+    "best_model_pt": "external_methods/results/attention_learn_to_route/formal_round2_20260420_20k50ep/checkpoints/best-model.pt",
+    "args_json": "external_methods/results/attention_learn_to_route/formal_round2_20260420_20k50ep/args.json"
+  }
+}

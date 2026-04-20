@@ -1,0 +1,137 @@
+{
+  "source_dataset_path": "datasets/cvrplib",
+  "source_splits_dir": "datasets/cvrplib/splits",
+  "output_dir": "external_methods/data/open_cvrplib_n30_20k",
+  "problem_size": 30,
+  "coord_scale": 10.0,
+  "normalize_coords": true,
+  "demand_scale": 1.0,
+  "seed_base": 20260420,
+  "note": "These offline datasets use the same open CVRPLIB split protocol and the same sample_open_vrp_base sampler as HGAT-POMO open-data training, but freeze the stream into deterministic train/val/test files for external static CVRP methods.",
+  "splits": {
+    "train": {
+      "split": "train",
+      "n_samples": 20000,
+      "eligible_instances": 47,
+      "source_instance_counts": {
+        "A-n32-k5": 441,
+        "A-n33-k6": 418,
+        "A-n34-k5": 393,
+        "A-n36-k5": 433,
+        "A-n37-k6": 419,
+        "A-n38-k5": 390,
+        "A-n39-k5": 434,
+        "A-n44-k6": 441,
+        "A-n45-k6": 438,
+        "A-n45-k7": 439,
+        "A-n46-k7": 420,
+        "A-n54-k7": 421,
+        "A-n60-k9": 401,
+        "A-n61-k9": 404,
+        "A-n62-k8": 412,
+        "A-n63-k10": 419,
+        "A-n64-k9": 440,
+        "A-n69-k9": 397,
+        "A-n80-k10": 421,
+        "B-n34-k5": 421,
+        "B-n35-k5": 435,
+        "B-n38-k6": 426,
+        "B-n39-k5": 428,
+        "B-n41-k6": 428,
+        "B-n43-k6": 431,
+        "B-n44-k7": 417,
+        "B-n50-k7": 457,
+        "B-n50-k8": 448,
+        "B-n52-k7": 414,
+        "B-n56-k7": 408,
+        "B-n63-k10": 415,
+        "B-n64-k9": 428,
+        "B-n66-k9": 400,
+        "B-n68-k9": 432,
+        "B-n78-k10": 417,
+        "P-n101-k4": 428,
+        "P-n40-k5": 409,
+        "P-n50-k7": 459,
+        "P-n50-k8": 441,
+        "P-n55-k10": 445,
+        "P-n55-k15": 435,
+        "P-n55-k7": 414,
+        "P-n55-k8": 431,
+        "P-n60-k10": 431,
+        "P-n65-k10": 415,
+        "P-n76-k4": 455,
+        "P-n76-k5": 451
+      },
+      "source_family_counts": {
+        "A": 7981,
+        "B": 6805,
+        "P": 5214
+      },
+      "files": {
+        "common_npz": "external_methods/data/open_cvrplib_n30_20k/train/common/samples.npz",
+        "common_manifest_csv": "external_methods/data/open_cvrplib_n30_20k/train/common/manifest.csv",
+        "attention_dataset_pkl": "external_methods/data/open_cvrplib_n30_20k/train/attention_learn_to_route/dataset.pkl",
+        "pomo_dataset_pt": "external_methods/data/open_cvrplib_n30_20k/train/pomo/dataset.pt",
+        "rl4co_dataset_npz": "external_methods/data/open_cvrplib_n30_20k/train/rl4co/dataset.npz"
+      }
+    },
+    "val": {
+      "split": "val",
+      "n_samples": 2000,
+      "eligible_instances": 10,
+      "source_instance_counts": {
+        "A-n37-k5": 208,
+        "A-n48-k7": 231,
+        "A-n55-k9": 182,
+        "A-n63-k9": 199,
+        "B-n45-k6": 173,
+        "B-n57-k9": 197,
+        "B-n67-k10": 209,
+        "P-n45-k5": 197,
+        "P-n60-k15": 192,
+        "P-n70-k10": 212
+      },
+      "source_family_counts": {
+        "A": 820,
+        "B": 579,
+        "P": 601
+      },
+      "files": {
+        "common_npz": "external_methods/data/open_cvrplib_n30_20k/val/common/samples.npz",
+        "common_manifest_csv": "external_methods/data/open_cvrplib_n30_20k/val/common/manifest.csv",
+        "attention_dataset_pkl": "external_methods/data/open_cvrplib_n30_20k/val/attention_learn_to_route/dataset.pkl",
+        "pomo_dataset_pt": "external_methods/data/open_cvrplib_n30_20k/val/pomo/dataset.pt",
+        "rl4co_dataset_npz": "external_methods/data/open_cvrplib_n30_20k/val/rl4co/dataset.npz"
+      }
+    },
+    "test": {
+      "split": "test",
+      "n_samples": 2000,
+      "eligible_instances": 10,
+      "source_instance_counts": {
+        "A-n33-k5": 182,
+        "A-n39-k6": 201,
+        "A-n53-k7": 202,
+        "A-n65-k9": 191,
+        "B-n31-k5": 186,
+        "B-n45-k5": 210,
+        "B-n51-k7": 217,
+        "B-n57-k7": 213,
+        "P-n50-k10": 185,
+        "P-n51-k10": 213
+      },
+      "source_family_counts": {
+        "A": 776,
+        "B": 826,
+        "P": 398
+      },
+      "files": {
+        "common_npz": "external_methods/data/open_cvrplib_n30_20k/test/common/samples.npz",
+        "common_manifest_csv": "external_methods/data/open_cvrplib_n30_20k/test/common/manifest.csv",
+        "attention_dataset_pkl": "external_methods/data/open_cvrplib_n30_20k/test/attention_learn_to_route/dataset.pkl",
+        "pomo_dataset_pt": "external_methods/data/open_cvrplib_n30_20k/test/pomo/dataset.pt",
+        "rl4co_dataset_npz": "external_methods/data/open_cvrplib_n30_20k/test/rl4co/dataset.npz"
+      }
+    }
+  }
+}

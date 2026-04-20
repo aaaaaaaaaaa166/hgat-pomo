@@ -1,0 +1,23 @@
+{
+  "repo_dir": "external_methods/repos/POMO",
+  "train_dataset": "external_methods/data/open_cvrplib_n30/train/pomo/dataset.pt",
+  "val_dataset": "external_methods/data/open_cvrplib_n30/val/pomo/dataset.pt",
+  "test_dataset": "external_methods/data/open_cvrplib_n30/test/pomo/dataset.pt",
+  "output_dir": "external_methods/results/pomo/smoke_20260420",
+  "device": "cpu",
+  "seed": 1234,
+  "problem_size": 30,
+  "pomo_size": 30,
+  "train_size": 10000,
+  "val_size": 1000,
+  "test_size": 1000,
+  "train_episodes": 128,
+  "val_episodes": 64,
+  "test_episodes": 64,
+  "train_batch_size": 64,
+  "eval_batch_size": 64,
+  "epochs": 1,
+  "lr": 0.0001,
+  "weight_decay": 1e-06,
+  "test_aug_factor": 8
+}

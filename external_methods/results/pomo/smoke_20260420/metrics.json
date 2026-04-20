@@ -1,0 +1,42 @@
+{
+  "method": "pomo",
+  "problem": "static_cvrp",
+  "dataset_protocol": "external_methods/data/open_cvrplib_n30/protocol.json",
+  "run_config": {
+    "repo_dir": "external_methods/repos/POMO",
+    "train_dataset": "external_methods/data/open_cvrplib_n30/train/pomo/dataset.pt",
+    "val_dataset": "external_methods/data/open_cvrplib_n30/val/pomo/dataset.pt",
+    "test_dataset": "external_methods/data/open_cvrplib_n30/test/pomo/dataset.pt",
+    "output_dir": "external_methods/results/pomo/smoke_20260420",
+    "device": "cpu",
+    "seed": 1234,
+    "problem_size": 30,
+    "pomo_size": 30,
+    "train_size": 10000,
+    "val_size": 1000,
+    "test_size": 1000,
+    "train_episodes": 128,
+    "val_episodes": 64,
+    "test_episodes": 64,
+    "train_batch_size": 64,
+    "eval_batch_size": 64,
+    "epochs": 1,
+    "lr": 0.0001,
+    "weight_decay": 1e-06,
+    "test_aug_factor": 8
+  },
+  "best_epoch": 1,
+  "best_val_cost": 95.30888366699219,
+  "test_metrics": {
+    "num_instances": 64,
+    "no_aug_avg_cost": 91.55126953125,
+    "no_aug_std_cost": 9.645398139953613,
+    "aug_avg_cost": 86.35505676269531,
+    "aug_std_cost": 8.28753662109375
+  },
+  "files": {
+    "history_csv": "external_methods/results/pomo/smoke_20260420/history.csv",
+    "best_model_pt": "external_methods/results/pomo/smoke_20260420/checkpoints/best-model.pt",
+    "run_config_json": "external_methods/results/pomo/smoke_20260420/run_config.json"
+  }
+}

@@ -5,6 +5,13 @@ from typing import Callable, List, Sequence, Tuple
 import numpy as np
 
 
+def _choose_pending_decision(env, obs):
+    req = int(obs.get("current_decision_request", -1))
+    if req > 0:
+        return req
+    return None
+
+
 def _route_cost(
     env,
     start_i: int,
@@ -106,6 +113,10 @@ def choose_truck_next_local_search(env, obs) -> int:
     Online truck-only baseline:
     replan over currently released orders, initialize with nearest/EDD, then 2-opt.
     """
+    decision_action = _choose_pending_decision(env, obs)
+    if decision_action is not None:
+        return int(decision_action)
+
     i = int(obs["i"])
     t = float(obs["t"])
     truck_mask = env.get_masks()["truck_mask"]

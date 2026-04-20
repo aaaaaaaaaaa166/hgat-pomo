@@ -1,0 +1,2 @@
+epoch,train_avg_cost,train_avg_loss,val_avg_cost,val_std_cost
+0,184.9134063720703,-9.838783264160156,169.83636474609375,47.9118537902832

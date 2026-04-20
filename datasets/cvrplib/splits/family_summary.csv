@@ -1,0 +1,4 @@
+family,total_instances,min_customers,max_customers,avg_customers,train,val,test
+A,27,31,79,48.44444444444444,19,4,4
+B,23,30,77,50.04347826086956,16,3,4
+P,17,39,100,58.64705882352941,12,3,2

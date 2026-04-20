@@ -4,3 +4,13 @@ experiments/smoke_checks_20260402/
 experiments/*/models/*.pt
 experiments/*/logs/*.log
 experiments/*/metrics/*trajs*.txt
+datasets/vrpinstances-1.0.3.tgz
+external_methods/repos/
+external_methods/scripts/__pycache__/
+external_methods/data/**/dataset.pkl
+external_methods/data/**/dataset.pt
+external_methods/data/**/dataset.npz
+external_methods/data/**/samples.npz
+external_methods/results/**/checkpoints/
+external_methods/results/**/train_stdout.log
+external_methods/results/**/train_stderr.log

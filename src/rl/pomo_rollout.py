@@ -3,6 +3,127 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 
 
+def _init_episode_stats(env) -> Dict[str, float]:
+    node_ids = np.arange(env.N + 1)
+    customer_mask = node_ids > 0
+    dynamic_mask = customer_mask & (env.is_dynamic > 0)
+    delivery_mask = customer_mask & (env.request_type > 0)
+    pickup_mask = customer_mask & (env.request_type < 0)
+    return {
+        "total_orders": float(customer_mask.sum()),
+        "dynamic_total": float(dynamic_mask.sum()),
+        "delivery_total": float(delivery_mask.sum()),
+        "pickup_total": float(pickup_mask.sum()),
+        "accepted_dynamic": 0.0,
+        "rejected_dynamic": 0.0,
+        "served_total": 0.0,
+        "served_dynamic": 0.0,
+        "served_delivery": 0.0,
+        "served_pickup": 0.0,
+        "on_time_count": 0.0,
+        "late_count": 0.0,
+        "total_lateness": 0.0,
+        "revenue_total": 0.0,
+        "truck_energy_total": 0.0,
+        "drone_energy_total": 0.0,
+        "energy_total": 0.0,
+        "depot_return_count": 0.0,
+        "drone_dispatch_count": 0.0,
+        "route_step_count": 0.0,
+        "decision_step_count": 0.0,
+        "timeout_count": 0.0,
+    }
+
+
+def _update_episode_stats(
+    stats: Dict[str, float],
+    env,
+    obs: Dict[str, Any],
+    obs2: Dict[str, Any],
+    action: Tuple[int, int],
+    info: Dict[str, Any],
+) -> None:
+    phase = str(info.get("phase", ""))
+    if phase == "decision":
+        stats["decision_step_count"] += 1.0
+    else:
+        stats["route_step_count"] += 1.0
+
+    k, j = int(action[0]), int(action[1])
+    if phase != "decision":
+        prev_i = int(info.get("i", obs.get("i", 0)))
+        if j == 0 and prev_i != 0:
+            stats["depot_return_count"] += 1.0
+        if k != env.K_NONE:
+            stats["drone_dispatch_count"] += 1.0
+
+    truck_energy = float(info.get("truck_energy_use", 0.0))
+    drone_energy = float(info.get("energy_use", 0.0))
+    stats["truck_energy_total"] += truck_energy
+    stats["drone_energy_total"] += drone_energy
+    stats["energy_total"] += truck_energy + drone_energy
+    stats["revenue_total"] += float(info.get("revenue_gained", 0.0))
+
+    prev_served = np.asarray(obs.get("served", []), dtype=np.float32)
+    next_served = np.asarray(obs2.get("served", []), dtype=np.float32)
+    if prev_served.size == 0 or next_served.size == 0:
+        return
+
+    new_nodes = np.where((next_served > 0.5) & (prev_served <= 0.5))[0]
+    if new_nodes.size == 0:
+        return
+
+    t_prev = float(obs.get("t", 0.0))
+    finish_truck = t_prev + float(info.get("truck_time", 0.0))
+    finish_drone = t_prev + float(info.get("drone_time", 0.0))
+    fallback_finish = t_prev + float(info.get("dt", 0.0))
+
+    for node in new_nodes:
+        node = int(node)
+        if node <= 0:
+            continue
+
+        stats["served_total"] += 1.0
+        if int(env.is_dynamic[node]) > 0:
+            stats["served_dynamic"] += 1.0
+        req_type = int(env.request_type[node])
+        if req_type > 0:
+            stats["served_delivery"] += 1.0
+        elif req_type < 0:
+            stats["served_pickup"] += 1.0
+
+        due_t = float(env.due[node])
+        if not np.isfinite(due_t):
+            stats["on_time_count"] += 1.0
+            continue
+
+        if node == j:
+            finish_t = finish_truck
+        elif node == k:
+            finish_t = finish_drone
+        else:
+            finish_t = fallback_finish
+
+        late = max(0.0, finish_t - due_t)
+        stats["total_lateness"] += late
+        if late <= 1e-9:
+            stats["on_time_count"] += 1.0
+        else:
+            stats["late_count"] += 1.0
+
+
+def _finalize_episode_stats(stats: Dict[str, float], env, obs: Dict[str, Any], done: bool) -> None:
+    node_ids = np.arange(env.N + 1)
+    dynamic_mask = (node_ids > 0) & (env.is_dynamic > 0)
+    accepted = np.asarray(obs.get("accepted", []), dtype=np.float32)
+    rejected = np.asarray(obs.get("rejected", []), dtype=np.float32)
+    if accepted.size > 0 and rejected.size > 0:
+        stats["accepted_dynamic"] = float(((accepted > 0.5) & dynamic_mask).sum())
+        stats["rejected_dynamic"] = float(((rejected > 0.5) & dynamic_mask).sum())
+    if not done:
+        stats["timeout_count"] += 1.0
+
+
 def _select_start_nodes(env, K: int, start_mode: str) -> List[int]:
     """为每条 POMO 轨迹选择首步卡车节点。
 
@@ -31,6 +152,7 @@ def pomo_rollout(
     K: int = 8,
     max_steps: int = 256,
     store_traj: bool = False,
+    collect_stats: bool = False,
     timeout_penalty: float = 1000.0,
     start_mode: str = "random",
 ) -> Tuple[torch.Tensor, torch.Tensor, Optional[List[List[Dict[str, Any]]]], torch.Tensor]:
@@ -48,6 +170,7 @@ def pomo_rollout(
     entropies = torch.zeros((K,), dtype=torch.float32, device=device)
 
     trajs: Optional[List[List[Dict[str, Any]]]] = [[] for _ in range(K)] if store_traj else None
+    stats_all: Optional[List[Dict[str, float]]] = [] if collect_stats else None
 
     # 有梯度时走训练路径 `forward_step`，否则走推理路径 `act`。
     use_forward = torch.is_grad_enabled()
@@ -56,6 +179,7 @@ def pomo_rollout(
     for k_id in range(K):
         e = env.copy()
         obs = e.reset()
+        episode_stats = _init_episode_stats(e) if collect_stats else None
 
         sum_r = 0.0
         sum_logp = torch.zeros((), dtype=torch.float32, device=device)
@@ -86,6 +210,8 @@ def pomo_rollout(
             sum_r += r_float
             sum_logp += logp.squeeze()
             sum_ent += ent.squeeze()
+            if collect_stats and episode_stats is not None:
+                _update_episode_stats(episode_stats, e, obs, obs2, action, info)
 
             if store_traj:
                 trajs[k_id].append({
@@ -113,5 +239,10 @@ def pomo_rollout(
         returns[k_id] = sum_r
         logps[k_id] = sum_logp
         entropies[k_id] = sum_ent
+        if collect_stats and episode_stats is not None and stats_all is not None:
+            _finalize_episode_stats(episode_stats, e, obs, done=done)
+            stats_all.append(episode_stats)
 
+    if collect_stats and stats_all is not None:
+        return returns, logps, trajs, entropies, stats_all
     return returns, logps, trajs, entropies

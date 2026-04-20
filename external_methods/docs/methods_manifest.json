@@ -1,0 +1,37 @@
+{
+  "created_on": "2026-04-20",
+  "workspace_root": "external_methods",
+  "methods": [
+    {
+      "name": "attention-learn-to-route",
+      "family": "attention model",
+      "repo_dir": "external_methods/repos/attention-learn-to-route",
+      "remote_url": "https://github.com/wouterkool/attention-learn-to-route.git",
+      "commit": "c9abf41ac2f878a55b20dc7e829bc942bb999631",
+      "dataset_format": "pickle list of (depot, locs, demand, capacity)",
+      "status": "cloned_adapter_planned",
+      "notes": "Will use a fixed static CVRP dataset exported from the repo's open CVRPLIB split protocol."
+    },
+    {
+      "name": "POMO",
+      "family": "pomo",
+      "repo_dir": "external_methods/repos/POMO",
+      "remote_url": "https://github.com/yd-kwon/POMO.git",
+      "commit": "d7c3d6ea580499a53e874fe9e065f69e799a8551",
+      "dataset_format": "torch file with depot_xy, node_xy, node_demand",
+      "status": "cloned_adapter_planned",
+      "notes": "Its environment already supports saved problems; training wrapper will reuse that entry point."
+    },
+    {
+      "name": "rl4co",
+      "family": "benchmark framework",
+      "repo_dir": "external_methods/repos/rl4co",
+      "remote_url": "https://github.com/ai4co/rl4co.git",
+      "commit": "7a1539678b6a81cc68b4069440aa5e98f6931f6c",
+      "dataset_format": "npz with depot, locs, demand, capacity",
+      "status": "cloned_adapter_planned",
+      "notes": "Supports file-backed CVRP datasets; requires additional dependencies beyond the current repo environment."
+    }
+  ]
+}
+

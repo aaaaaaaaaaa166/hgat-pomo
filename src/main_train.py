@@ -20,7 +20,12 @@ import torch
 if __package__ is None or __package__ == "":
     sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.env.instance_gen import make_random_instance
+from src.env.instance_gen import make_instance_from_coord_demand, make_random_instance
+from src.env.open_data_loader import (
+    load_cvrplib_instances_filtered,
+    read_instance_name_list,
+    sample_open_vrp_base,
+)
 from src.env.td_env import TruckDroneRendezvousEnv, EnvConfig
 from src.models.policy import HGATPolicy
 from src.rl.pomo_rollout import pomo_rollout
@@ -54,7 +59,7 @@ def smoke_test_policy_device(device: torch.device, cfg: EnvConfig) -> bool:
     部分 PyG 算子对后端有要求；先做烟雾测试可避免训练中途失败。
     """
     try:
-        coord, release, demand, due = make_random_instance(
+        coord, release, demand, due, meta = make_random_instance(
             N=8,
             seed=123,
             coord_scale=10.0,
@@ -66,7 +71,7 @@ def smoke_test_policy_device(device: torch.device, cfg: EnvConfig) -> bool:
             tw_slack_high=6.0,
             return_due=True,
         )
-        env = TruckDroneRendezvousEnv(coord, release, demand, due=due, cfg=cfg, seed=123)
+        env = TruckDroneRendezvousEnv(coord, release, demand, due=due, cfg=cfg, seed=123, **meta)
         policy = HGATPolicy(hidden_dim=64, heads=2, dropout=0.0, k_nn_orders=4).to(device)
         obs = env.reset()
         policy.forward_step(env, obs)
@@ -94,6 +99,7 @@ def main():
     parser.add_argument("--entropy-coef", type=float, default=0.01)
     parser.add_argument("--entropy-coef-end", type=float, default=0.0)
     parser.add_argument("--save-path", type=str, default="policy.pt")
+    parser.add_argument("--init-model-path", type=str, default="")
     parser.add_argument("--checkpoint-every", type=int, default=0)
     parser.add_argument("--edge-mode", type=str, default="static", choices=["static", "road"])
     parser.add_argument("--time-dependent", action="store_true")
@@ -109,18 +115,53 @@ def main():
     parser.add_argument("--tw-slack-low", type=float, default=4.0)
     parser.add_argument("--tw-slack-high", type=float, default=14.0)
     parser.add_argument("--tw-active-prob", type=float, default=0.8)
+    parser.add_argument("--scheduled-ratio", type=float, default=0.5)
+    parser.add_argument("--dynamic-pickup-ratio", type=float, default=1.0)
+    parser.add_argument("--response-slack-low", type=float, default=0.25)
+    parser.add_argument("--response-slack-high", type=float, default=1.0)
+    parser.add_argument(
+        "--dataset-path",
+        type=str,
+        default="",
+        help="Path to open-source CVRPLIB .vrp file or a directory of .vrp files.",
+    )
+    parser.add_argument("--dataset-format", type=str, default="cvrplib", choices=["cvrplib"])
+    parser.add_argument(
+        "--dataset-split-file",
+        type=str,
+        default="",
+        help="Optional txt list of instance names for train split (one name per line).",
+    )
+    parser.add_argument("--dataset-demand-scale", type=float, default=1.0)
+    parser.add_argument("--dataset-no-normalize-coords", action="store_true")
 
     # heterogeneity + dynamicity
     parser.add_argument("--vT", type=float, default=1.0)
     parser.add_argument("--vD", type=float, default=1.5)
     parser.add_argument("--QD", type=float, default=1.0)
     parser.add_argument("--B", type=float, default=6.0)
+    parser.add_argument("--truck-capacity", type=float, default=3.0)
+    parser.add_argument("--truck-service-time", type=float, default=0.05)
+    parser.add_argument("--drone-service-time", type=float, default=0.03)
+    parser.add_argument("--depot-service-time", type=float, default=0.10)
     parser.add_argument("--traffic-sigma", type=float, default=0.15)
     parser.add_argument("--lateness-penalty", type=float, default=0.5)
+    parser.add_argument("--reject-penalty", type=float, default=0.5)
+    parser.add_argument("--overtime-penalty", type=float, default=1.0)
+    parser.add_argument("--time-cost-weight", type=float, default=1.0)
+    parser.add_argument("--energy-cost-weight", type=float, default=0.2)
     parser.add_argument("--soc-init", type=float, default=1.0)
     parser.add_argument("--soc-reserve", type=float, default=0.10)
     parser.add_argument("--energy-per-dist", type=float, default=0.08)
+    parser.add_argument("--truck-energy-per-dist", type=float, default=0.04)
+    parser.add_argument("--payload-energy-factor", type=float, default=0.4)
     parser.add_argument("--recharge-rate", type=float, default=0.25)
+    parser.add_argument("--workday-start", type=float, default=8.0)
+    parser.add_argument("--workday-end", type=float, default=20.0)
+    parser.add_argument("--morning-peak-start", type=float, default=8.0)
+    parser.add_argument("--morning-peak-end", type=float, default=10.0)
+    parser.add_argument("--evening-peak-start", type=float, default=17.0)
+    parser.add_argument("--evening-peak-end", type=float, default=19.0)
     parser.add_argument("--road-detour-factor", type=float, default=1.18)
     parser.add_argument("--road-signal-density", type=float, default=0.006)
     parser.add_argument("--road-turn-density", type=float, default=0.010)
@@ -149,24 +190,65 @@ def main():
     if device.type == "cuda":
         print("CUDA device:", torch.cuda.get_device_name(0))
 
+    open_instances = None
+    use_open_dataset = len(args.dataset_path.strip()) > 0
+    if use_open_dataset:
+        if args.dataset_format != "cvrplib":
+            raise ValueError(f"Unsupported dataset_format={args.dataset_format}")
+        include_names = None
+        if args.dataset_split_file.strip():
+            include_names = read_instance_name_list(args.dataset_split_file.strip())
+        open_instances = load_cvrplib_instances_filtered(
+            args.dataset_path.strip(),
+            include_names=include_names,
+        )
+        open_instances = [x for x in open_instances if x.n_customers >= int(args.N)]
+        if len(open_instances) == 0:
+            raise ValueError(
+                "No CVRPLIB instance has enough customers for current --N. "
+                "Please reduce --N or use larger instance files."
+            )
+        min_n = min(x.n_customers for x in open_instances)
+        max_n = max(x.n_customers for x in open_instances)
+        split_msg = args.dataset_split_file.strip() if args.dataset_split_file.strip() else "<all>"
+        print(
+            f"Using open dataset: {len(open_instances)} instances "
+            f"(customers range: {min_n}-{max_n}), demand_scale={args.dataset_demand_scale}, "
+            f"normalize_coords={not args.dataset_no_normalize_coords}, split={split_msg}"
+        )
+
     cfg = EnvConfig(
         vT=args.vT,
         vD=args.vD,
         QD=args.QD,
         B=args.B,
-        sT=0.0,
-        sD=0.0,
+        truck_capacity=args.truck_capacity,
+        sT=args.truck_service_time,
+        sD=args.drone_service_time,
+        depot_service_time=args.depot_service_time,
         allow_wait=True,
         idle_to_next_release=True,
         traffic_sigma=args.traffic_sigma,
         lateness_penalty=args.lateness_penalty,
+        reject_penalty=args.reject_penalty,
+        overtime_penalty=args.overtime_penalty,
+        time_cost_weight=args.time_cost_weight,
+        energy_cost_weight=args.energy_cost_weight,
         soc_init=args.soc_init,
         soc_min_reserve=args.soc_reserve,
         energy_per_dist=args.energy_per_dist,
+        truck_energy_per_dist=args.truck_energy_per_dist,
+        payload_energy_factor=args.payload_energy_factor,
         recharge_rate=args.recharge_rate,
         edge_mode=args.edge_mode,
         time_dependent=args.time_dependent,
         peak_after_served_ratio=args.peak_after_served_ratio,
+        workday_start=args.workday_start,
+        workday_end=args.workday_end,
+        morning_peak_start=args.morning_peak_start,
+        morning_peak_end=args.morning_peak_end,
+        evening_peak_start=args.evening_peak_start,
+        evening_peak_end=args.evening_peak_end,
         road_detour_factor=args.road_detour_factor,
         road_signal_density=args.road_signal_density,
         road_turn_density=args.road_turn_density,
@@ -195,6 +277,17 @@ def main():
         tanh_clipping=args.tanh_clipping,
         temperature=args.temperature,
     ).to(device)
+    if args.init_model_path.strip():
+        init_path = args.init_model_path.strip()
+        state_dict = torch.load(init_path, map_location=device, weights_only=True)
+        try:
+            policy.load_state_dict(state_dict, strict=True)
+            print(f"Loaded initial model from {init_path}")
+        except RuntimeError as exc:
+            raise RuntimeError(
+                f"Failed to load init model: {init_path}. "
+                "Please ensure architecture and feature schema match."
+            ) from exc
     print("policy param device:", next(policy.parameters()).device)
 
     optimizer = torch.optim.Adam(policy.parameters(), lr=args.lr)
@@ -213,26 +306,58 @@ def main():
             cur_N = int(round(n0 + (args.N - n0) * progress))
         else:
             cur_N = int(args.N)
-        max_steps = 5 * (cur_N + 1)
+        max_steps = 8 * (cur_N + 1)
 
         returns_b, logps_b, ents_b = [], [], []
         for b_id in range(args.batch_size):
             inst_seed = ep * 10000 + b_id
-            coord, release, demand, due = make_random_instance(
-                N=cur_N,
-                seed=inst_seed,
-                coord_scale=args.coord_scale,
-                release_mode=args.release_mode,
-                n_batches=args.n_batches,
-                max_release=args.max_release,
-                poisson_rate=args.poisson_rate,
-                tw_mode=args.tw_mode,
-                tw_slack_low=args.tw_slack_low,
-                tw_slack_high=args.tw_slack_high,
-                tw_active_prob=args.tw_active_prob,
-                return_due=True,
-            )
-            env = TruckDroneRendezvousEnv(coord, release, demand, due=due, cfg=cfg, seed=inst_seed)
+            if open_instances is None:
+                coord, release, demand, due, meta = make_random_instance(
+                    N=cur_N,
+                    seed=inst_seed,
+                    coord_scale=args.coord_scale,
+                    release_mode=args.release_mode,
+                    n_batches=args.n_batches,
+                    max_release=args.max_release,
+                    poisson_rate=args.poisson_rate,
+                    tw_mode=args.tw_mode,
+                    tw_slack_low=args.tw_slack_low,
+                    tw_slack_high=args.tw_slack_high,
+                    tw_active_prob=args.tw_active_prob,
+                    scheduled_ratio=args.scheduled_ratio,
+                    dynamic_pickup_ratio=args.dynamic_pickup_ratio,
+                    response_slack_low=args.response_slack_low,
+                    response_slack_high=args.response_slack_high,
+                    return_due=True,
+                )
+            else:
+                coord_base, demand_base, _ = sample_open_vrp_base(
+                    instances=open_instances,
+                    N=cur_N,
+                    seed=inst_seed,
+                    coord_scale=args.coord_scale,
+                    normalize_coords=not args.dataset_no_normalize_coords,
+                    demand_scale=args.dataset_demand_scale,
+                )
+                coord, release, demand, due, meta = make_instance_from_coord_demand(
+                    coord=coord_base,
+                    demand=demand_base,
+                    seed=inst_seed,
+                    release_mode=args.release_mode,
+                    n_batches=args.n_batches,
+                    max_release=args.max_release,
+                    poisson_rate=args.poisson_rate,
+                    tw_mode=args.tw_mode,
+                    tw_slack_low=args.tw_slack_low,
+                    tw_slack_high=args.tw_slack_high,
+                    tw_active_prob=args.tw_active_prob,
+                    scheduled_ratio=args.scheduled_ratio,
+                    dynamic_pickup_ratio=args.dynamic_pickup_ratio,
+                    response_slack_low=args.response_slack_low,
+                    response_slack_high=args.response_slack_high,
+                    return_due=True,
+                )
+            env = TruckDroneRendezvousEnv(coord, release, demand, due=due, cfg=cfg, seed=inst_seed, **meta)
 
             returns, logps, _, entropies = pomo_rollout(
                 policy,

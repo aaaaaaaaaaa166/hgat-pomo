@@ -1,0 +1,32 @@
+{
+  "output_dir": "D:\\HGAT-POMO\\experiments\\thesis_protocol_20260420_formal",
+  "elapsed_sec": 6172.22018122673,
+  "runs": 90,
+  "seeds": [
+    0,
+    1,
+    2
+  ],
+  "scenarios": [
+    "full_main",
+    "full_backup",
+    "ablate_no_accept_reject",
+    "ablate_no_pickup_capacity",
+    "ablate_no_time_traffic"
+  ],
+  "methods": [
+    "model",
+    "random",
+    "truck_only",
+    "heuristic",
+    "local_search_truck",
+    "profit_accept"
+  ],
+  "files": {
+    "config_json": "D:\\HGAT-POMO\\experiments\\thesis_protocol_20260420_formal\\config.json",
+    "runs_csv": "D:\\HGAT-POMO\\experiments\\thesis_protocol_20260420_formal\\runs.csv",
+    "table_cost_csv": "D:\\HGAT-POMO\\experiments\\thesis_protocol_20260420_formal\\table_cost.csv",
+    "table_ops_csv": "D:\\HGAT-POMO\\experiments\\thesis_protocol_20260420_formal\\table_ops.csv",
+    "table_ablation_csv": "D:\\HGAT-POMO\\experiments\\thesis_protocol_20260420_formal\\table_ablation.csv"
+  }
+}
