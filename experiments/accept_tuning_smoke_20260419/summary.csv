@@ -1,2 +1,0 @@
-tag,seeds,reject_penalty,response_slack_high,scheduled_ratio,model_best_mean_mean,model_best_mean_std,accept_rate_mean,accept_rate_std,on_time_rate_mean,on_time_rate_std,avg_lateness_mean,avg_lateness_std,score_mean,score_std
-rp0.8_rsh1.2_sr0.5,1,0.8,1.2,0.5,127.9529037475586,0.0,0.01666666753590107,0.0,0.2604166865348816,0.0,9.675768852233887,0.0,0.06903942933678625,0.0

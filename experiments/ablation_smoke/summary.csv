@@ -1,3 +1,0 @@
-variant,n_runs,train_sec_mean,train_sec_std,eval_sec_mean,eval_sec_std,model_best_mean_mean,model_best_mean_std,model_mean_mean_mean,model_mean_mean_std,model_worst_mean_mean,model_worst_mean_std,random_best_mean_mean,random_best_mean_std,random_mean_mean_mean,random_mean_mean_std,random_worst_mean_mean,random_worst_mean_std,improve_best_pct_mean,improve_best_pct_std
-full,1,6.247792,0.000000,5.174401,0.000000,130.879196,0.000000,149.344971,0.000000,167.810745,0.000000,91.978134,0.000000,104.597878,0.000000,117.217621,0.000000,-42.293815,0.000000
-no_traffic,1,5.392361,0.000000,4.613541,0.000000,141.885010,0.000000,158.434219,0.000000,174.983429,0.000000,81.963104,0.000000,96.288361,0.000000,110.613617,0.000000,-73.108390,0.000000

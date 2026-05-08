@@ -1,2 +1,0 @@
-variant,seed,train_sec,eval_sec,model_best_mean,model_mean_mean,model_worst_mean,random_best_mean,random_mean_mean,random_worst_mean,improve_best_pct,metrics_path,model_path
-full,0,5.697487,4.036534,50.108524,62.661407,75.214287,44.599331,44.956062,45.312794,-12.352637,D:\HGAT-POMO\experiments\ablation_smoke2\metrics\full_seed0.json,D:\HGAT-POMO\experiments\ablation_smoke2\models\full_seed0.pt

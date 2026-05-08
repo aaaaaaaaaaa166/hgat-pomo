@@ -1,8 +1,23 @@
 __pycache__/
 *.py[cod]
+.venv/
+.cache/
+.idea/
+.pytest_cache/
+
+# Runtime outputs and heavyweight training artifacts.
+*.log
+*.pt
+*.pth
+*.ckpt
+checkpoints/
+models/
+
+# Smoke/debug runs are useful while developing, but not for the thesis archive.
 experiments/smoke_checks_20260402/
 experiments/*/models/*.pt
 experiments/*/logs/*.log
+experiments/*smoke*/
 experiments/*/metrics/*trajs*.txt
 datasets/vrpinstances-1.0.3.tgz
 external_methods/repos/
@@ -11,6 +26,9 @@ external_methods/data/**/dataset.pkl
 external_methods/data/**/dataset.pt
 external_methods/data/**/dataset.npz
 external_methods/data/**/samples.npz
+external_methods/data/**/train/
+external_methods/data/**/val/
+external_methods/data/**/test/
 external_methods/results/**/checkpoints/
 external_methods/results/**/train_stdout.log
 external_methods/results/**/train_stderr.log

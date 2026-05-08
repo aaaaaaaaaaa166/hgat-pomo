@@ -1,2 +1,0 @@
-tag,seed,reject_penalty,response_slack_high,scheduled_ratio,model_best_mean,accept_rate,on_time_rate,avg_lateness,score,model_path,metrics_path
-rp0.8_rsh1.2_sr0.5,0,0.8,1.2,0.5,127.9529037475586,0.01666666753590107,0.2604166865348816,9.675768852233887,0.06903942933678625,D:\HGAT-POMO\experiments\accept_tuning_smoke_20260419\models\rp0.8_rsh1.2_sr0.5_seed0.pt,D:\HGAT-POMO\experiments\accept_tuning_smoke_20260419\metrics\rp0.8_rsh1.2_sr0.5_seed0.json
