@@ -33,6 +33,8 @@ from src.experiments.run_time_window_repair_experiments import (
 from src.schedulers.acceptance_insertion import AcceptanceInsertionConfig, rollout_acceptance_insertion
 from src.schedulers.feasibility import classify_order_feasibility
 from src.schedulers.insertion_objective import InsertionObjectiveConfig
+from src.schedulers.joint_accept_route_beam import JointAcceptRouteBeamConfig, rollout_joint_accept_route_beam
+from src.schedulers.joint_beam_objective import JointBeamObjectiveConfig
 
 
 INSERTION_METHODS = [
@@ -46,6 +48,7 @@ INSERTION_METHODS = [
     "ontime_beam_oracle",
     "guarded_ontime_beam",
     "policy_accept_ontime_beam",
+    "joint_accept_route_beam",
 ]
 ALL_METHODS = ["raw_baseline", "v2_repair_only"] + INSERTION_METHODS
 
@@ -234,6 +237,27 @@ def _insertion_cfg(method: str) -> AcceptanceInsertionConfig:
     return AcceptanceInsertionConfig(method=method, candidate_top_k=12, objective=objective)
 
 
+def _joint_beam_cfg(args: argparse.Namespace) -> JointAcceptRouteBeamConfig:
+    return JointAcceptRouteBeamConfig(
+        beam_size=int(args.joint_beam_size),
+        lookahead_depth=int(args.joint_lookahead_depth),
+        candidate_top_k=int(args.joint_candidate_top_k),
+        max_expanded_states=int(args.joint_max_expanded_states),
+        time_limit_seconds=float(args.joint_time_limit_seconds),
+        enable_dominance_pruning=bool(args.joint_enable_dominance_pruning),
+        objective=JointBeamObjectiveConfig(
+            accept_weight=float(args.joint_accept_weight),
+            on_time_weight=float(args.joint_on_time_weight),
+            late_weight=float(args.joint_late_weight),
+            lateness_weight=float(args.joint_lateness_weight),
+            max_lateness_weight=float(args.joint_max_lateness_weight),
+            energy_weight=float(args.joint_energy_weight),
+            distance_weight=float(args.joint_distance_weight),
+            hard_violation_weight=float(args.joint_hard_violation_weight),
+        ),
+    )
+
+
 def _guarded_accept(
     env: Any,
     order_id: int,
@@ -405,6 +429,8 @@ def evaluate_method(args: argparse.Namespace, method: str, policy: Any, out_dir:
             cost, traj, method_debug = rollout_guarded_ontime_beam(env, seed, max_steps=max_steps)
         elif method == "policy_accept_ontime_beam":
             cost, traj, method_debug = rollout_policy_accept_ontime_beam(policy, env, seed, max_steps=max_steps)
+        elif method == "joint_accept_route_beam":
+            cost, traj, method_debug = rollout_joint_accept_route_beam(env, _joint_beam_cfg(args), max_steps=max_steps)
         else:
             cost, traj, method_debug = rollout_acceptance_insertion(env, _insertion_cfg(method), max_steps=max_steps)
         summary, orders, drone = analyze_episode(env, traj, model_name=method, instance_id=idx, objective_cost=cost)
@@ -556,6 +582,21 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--turn-penalty", type=float, default=0.12)
     p.add_argument("--left-turn-penalty", type=float, default=0.08)
     p.add_argument("--u-turn-penalty", type=float, default=0.30)
+    p.add_argument("--joint-beam-size", type=int, default=16)
+    p.add_argument("--joint-lookahead-depth", type=int, default=3)
+    p.add_argument("--joint-candidate-top-k", type=int, default=10)
+    p.add_argument("--joint-max-expanded-states", type=int, default=5000)
+    p.add_argument("--joint-time-limit-seconds", type=float, default=2.0)
+    p.add_argument("--joint-accept-weight", type=float, default=20.0)
+    p.add_argument("--joint-on-time-weight", type=float, default=30.0)
+    p.add_argument("--joint-late-weight", type=float, default=40.0)
+    p.add_argument("--joint-lateness-weight", type=float, default=3.0)
+    p.add_argument("--joint-max-lateness-weight", type=float, default=8.0)
+    p.add_argument("--joint-energy-weight", type=float, default=0.08)
+    p.add_argument("--joint-distance-weight", type=float, default=0.04)
+    p.add_argument("--joint-hard-violation-weight", type=float, default=1000000.0)
+    p.add_argument("--joint-enable-dominance-pruning", type=_bool, default=True)
+    p.add_argument("--joint-disable-dominance-pruning", dest="joint_enable_dominance_pruning", action="store_false")
     args = p.parse_args()
     args.model_path = args.baseline_model_path
     return args
