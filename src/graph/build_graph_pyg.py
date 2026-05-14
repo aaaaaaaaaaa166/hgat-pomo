@@ -7,6 +7,11 @@ import torch
 from torch_geometric.data import HeteroData
 
 from src.env.instance_gen import REQUEST_PICKUP
+from src.training.sequence_time_window_features import (
+    compute_drone_sequence_tw_features,
+    compute_order_sequence_tw_features,
+    compute_truck_sequence_tw_features,
+)
 
 
 def build_hgat_heterodata(env, obs: Dict[str, Any], k_nn_orders: int = 8) -> Tuple[HeteroData, Dict[str, torch.Tensor]]:
@@ -14,6 +19,8 @@ def build_hgat_heterodata(env, obs: Dict[str, Any], k_nn_orders: int = 8) -> Tup
     i = int(obs["i"])
     served_np = np.asarray(obs["served"], dtype=np.float32)
     accepted_np = np.asarray(obs.get("accepted", np.zeros_like(served_np)), dtype=np.float32)
+    rejected_np = np.asarray(obs.get("rejected", np.zeros_like(served_np)), dtype=np.float32)
+    expired_np = np.asarray(obs.get("expired", np.zeros_like(served_np)), dtype=np.float32)
     known_np = np.asarray(obs.get("known", np.zeros_like(served_np)), dtype=np.float32)
     loaded_np = np.asarray(obs.get("loaded", np.zeros_like(served_np)), dtype=np.float32)
     active_deadlines_np = np.asarray(obs.get("active_deadlines", env.due), dtype=np.float32)
@@ -28,6 +35,8 @@ def build_hgat_heterodata(env, obs: Dict[str, Any], k_nn_orders: int = 8) -> Tup
     coord = torch.from_numpy(env.coord)
     served = torch.from_numpy(served_np).float()
     accepted = torch.from_numpy(accepted_np).float()
+    rejected = torch.from_numpy(rejected_np).float()
+    expired = torch.from_numpy(expired_np).float()
     known = torch.from_numpy(known_np).float()
     loaded = torch.from_numpy(loaded_np).float()
     active_deadlines = torch.from_numpy(active_deadlines_np)
@@ -54,6 +63,8 @@ def build_hgat_heterodata(env, obs: Dict[str, Any], k_nn_orders: int = 8) -> Tup
     revenue_norm = torch.clamp(revenue / revenue_den, min=0.0, max=5.0)
     revenue_norm = torch.where(known_mask, revenue_norm, torch.zeros_like(revenue_norm))
     accepted = torch.where(known_mask, accepted, torch.zeros_like(accepted))
+    rejected = torch.where(known_mask, rejected, torch.zeros_like(rejected))
+    expired = torch.where(known_mask, expired, torch.zeros_like(expired))
     served = torch.where(known_mask, served, torch.zeros_like(served))
     loaded = torch.where(known_mask, loaded, torch.zeros_like(loaded))
 
@@ -94,6 +105,57 @@ def build_hgat_heterodata(env, obs: Dict[str, Any], k_nn_orders: int = 8) -> Tup
         ],
         dim=1,
     )
+    if bool(getattr(env.cfg, "enable_sequence_time_window_features", False)):
+        x_order = torch.cat([x_order, compute_order_sequence_tw_features(env, obs)], dim=1)
+    if str(getattr(env.cfg, "feature_mode", "legacy")) == "service_v2":
+        response_deadline = torch.from_numpy(env.decision_deadline.copy()).float()
+        response_safe = torch.where(
+            torch.isfinite(response_deadline),
+            response_deadline,
+            torch.full_like(response_deadline, 2.0 * t_den),
+        )
+        response_deadline_norm = torch.clamp(response_safe / t_den, min=0.0, max=2.0)
+        response_slack_norm = torch.clamp((response_safe - torch.tensor(t, dtype=torch.float32)) / t_den, min=-1.0, max=2.0)
+        estimated_arrival = []
+        arrival_slack = []
+        predicted_late = []
+        urgency = []
+        tight_threshold = max(1.0, 0.25 * float(getattr(env.cfg, "B", 6.0)) + float(env.cfg.sT))
+        for node in range(m):
+            if node == 0:
+                eta = t
+            else:
+                try:
+                    eta = t + float(env._tau_truck(i, node, apply_traffic=False, bucket=str(obs.get("time_bucket", env.get_time_bucket())))) + float(env.cfg.sT)
+                except Exception:
+                    eta = t + float(env.dist_mat[i, node]) / max(1e-9, float(env.cfg.vT)) + float(env.cfg.sT)
+            due = float(env.due[node])
+            slack_after = (due - eta) if np.isfinite(due) else 2.0 * t_den
+            late = max(0.0, eta - due) if np.isfinite(due) else 0.0
+            estimated_arrival.append(eta)
+            arrival_slack.append(slack_after)
+            predicted_late.append(late)
+            urgency.append(0.0 if node == 0 else min(3.0, 1.0 / (1.0 + max(0.0, slack_after)) + late / t_den))
+        estimated_arrival_t = torch.tensor(estimated_arrival, dtype=torch.float32)
+        arrival_slack_t = torch.tensor(arrival_slack, dtype=torch.float32)
+        predicted_late_t = torch.tensor(predicted_late, dtype=torch.float32)
+        urgency_t = torch.tensor(urgency, dtype=torch.float32)
+        service_v2_extra = torch.stack(
+            [
+                torch.where(known_mask, response_deadline_norm, torch.zeros_like(response_deadline_norm)),
+                torch.where(known_mask, response_slack_norm, torch.zeros_like(response_slack_norm)),
+                torch.where(known_mask, torch.clamp(estimated_arrival_t / t_den, 0.0, 3.0), torch.zeros_like(estimated_arrival_t)),
+                torch.where(known_mask, torch.clamp(arrival_slack_t / t_den, -2.0, 2.0), torch.zeros_like(arrival_slack_t)),
+                torch.where(known_mask, torch.clamp(predicted_late_t / t_den, 0.0, 3.0), torch.zeros_like(predicted_late_t)),
+                ((response_safe - torch.tensor(t, dtype=torch.float32)) < 0.0).float() * known.float(),
+                rejected,
+                expired,
+                ((arrival_slack_t <= tight_threshold).float() * known.float()),
+                torch.where(known_mask, torch.clamp(urgency_t, 0.0, 3.0), torch.zeros_like(urgency_t)),
+            ],
+            dim=1,
+        )
+        x_order = torch.cat([x_order, service_v2_extra], dim=1)
 
     t_norm = torch.tensor([t / t_den], dtype=torch.float32)
     pending_norm = torch.tensor([pending_count / max(1.0, float(n))], dtype=torch.float32)
@@ -106,6 +168,8 @@ def build_hgat_heterodata(env, obs: Dict[str, Any], k_nn_orders: int = 8) -> Tup
             torch.tensor([is_peak], dtype=torch.float32),
         ]
     ).view(1, -1)
+    if bool(getattr(env.cfg, "enable_sequence_time_window_features", False)):
+        x_truck = torch.cat([x_truck, compute_truck_sequence_tw_features(env, obs)], dim=1)
 
     v_t = float(env.cfg.vT)
     v_d = float(env.cfg.vD)
@@ -121,6 +185,8 @@ def build_hgat_heterodata(env, obs: Dict[str, Any], k_nn_orders: int = 8) -> Tup
         ]],
         dtype=torch.float32,
     )
+    if bool(getattr(env.cfg, "enable_sequence_time_window_features", False)):
+        x_drone = torch.cat([x_drone, compute_drone_sequence_tw_features(env, obs)], dim=1)
 
     data = HeteroData()
     data["order"].x = x_order
@@ -167,6 +233,8 @@ def build_hgat_heterodata(env, obs: Dict[str, Any], k_nn_orders: int = 8) -> Tup
         "served": served,
         "known": known,
         "accepted": accepted,
+        "rejected": rejected,
+        "expired": expired,
         "cur_i": torch.tensor([i], dtype=torch.long),
         "t": torch.tensor([t], dtype=torch.float32),
         "soc": torch.tensor([soc], dtype=torch.float32),

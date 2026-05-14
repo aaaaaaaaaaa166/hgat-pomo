@@ -13,6 +13,11 @@ from src.graph.road_aware_features import (
     TimeBucketConfig,
     build_proxy_road_aware_matrices,
 )
+from src.training.sequence_time_window_reward import (
+    sequence_tw_pressure,
+    sequence_tw_reward_components,
+)
+from src.training.sequence_time_window_features import compute_global_sequence_tw_stats
 
 
 @dataclass
@@ -30,6 +35,10 @@ class EnvConfig:
     traffic_sigma: float = 0.0
     lateness_penalty: float = 0.0
     reject_penalty: float = 0.5
+    accept_reward: float = 0.0
+    on_time_reward: float = 0.0
+    late_count_penalty: float = 0.0
+    severe_lateness_penalty: float = 0.0
     unserved_penalty: float = 2.0
     overtime_penalty: float = 1.0
     time_cost_weight: float = 1.0
@@ -40,7 +49,14 @@ class EnvConfig:
     energy_per_dist: float = 0.08
     truck_energy_per_dist: float = 0.04
     payload_energy_factor: float = 0.4
+    drone_takeoff_landing_energy: float = 0.0
+    drone_idle_energy_per_time: float = 0.0
     recharge_rate: float = 0.25
+    response_window: float = 0.0
+    decision_mode: str = "legacy"
+    reject_feasible_penalty: float = 0.0
+    reject_infeasible_penalty: float = 0.0
+    expired_order_penalty: float = 0.0
     edge_mode: str = "static"
     time_dependent: bool = False
     peak_after_served_ratio: float = 0.5
@@ -59,6 +75,19 @@ class EnvConfig:
     turn_penalty: float = 0.12
     left_turn_penalty: float = 0.08
     u_turn_penalty: float = 0.30
+    enable_sequence_time_window_features: bool = False
+    enable_sequence_time_window_reward: bool = False
+    late_order_penalty: float = 0.0
+    lateness_duration_penalty: float = 0.0
+    severe_lateness_threshold: float = 10.0
+    max_lateness_penalty: float = 0.0
+    future_lateness_risk_penalty: float = 0.0
+    tight_order_delay_penalty: float = 0.0
+    slack_preservation_reward: float = 0.0
+    distance_cost_weight: float = 0.0
+    workload_balance_weight: float = 0.0
+    hard_constraint_violation_penalty: float = 1000000.0
+    feature_mode: str = "legacy"
 
 
 class TruckDroneRendezvousEnv:
@@ -79,6 +108,7 @@ class TruckDroneRendezvousEnv:
         decision_deadline: Optional[np.ndarray] = None,
         drone_eligible: Optional[np.ndarray] = None,
     ):
+        self.cfg = cfg or EnvConfig()
         self.coord = np.asarray(coord, dtype=np.float32)
         self.release = np.asarray(release, dtype=np.float32)
         self.demand = np.asarray(demand, dtype=np.float32)
@@ -105,6 +135,12 @@ class TruckDroneRendezvousEnv:
             if decision_deadline is None
             else np.asarray(decision_deadline, dtype=np.float32)
         )
+        if float(getattr(self.cfg, "response_window", 0.0)) > 0.0:
+            dynamic_mask = self.is_dynamic > 0
+            self.decision_deadline = self.decision_deadline.copy()
+            self.decision_deadline[dynamic_mask] = (
+                self.release[dynamic_mask] + float(self.cfg.response_window)
+            )
         self.drone_eligible = (
             np.where(np.arange(self.coord.shape[0]) == 0, 0, 1).astype(np.int8)
             if drone_eligible is None
@@ -122,7 +158,6 @@ class TruckDroneRendezvousEnv:
         assert self.drone_eligible.shape[0] == self.coord.shape[0]
 
         self.N = self.coord.shape[0] - 1
-        self.cfg = cfg or EnvConfig()
         if self.cfg.edge_mode not in {"static", "road"}:
             raise ValueError("edge_mode must be 'static' or 'road'")
         self.max_work_time = max(1e-6, float(self.cfg.workday_end) - float(self.cfg.workday_start))
@@ -200,8 +235,18 @@ class TruckDroneRendezvousEnv:
             "served": self.state["served"].copy(),
             "accepted": self.state["accepted"].copy(),
             "rejected": self.state["rejected"].copy(),
+            "expired": self.state.get("expired", np.zeros_like(self.state["served"])).copy(),
             "known": self.state["known"].copy(),
             "loaded": self.state["loaded"].copy(),
+            "accept_time": self.state.get(
+                "accept_time", np.full((self.N + 1,), np.nan, dtype=np.float32)
+            ).copy(),
+            "finish_time": self.state.get(
+                "finish_time", np.full((self.N + 1,), np.nan, dtype=np.float32)
+            ).copy(),
+            "reject_reason": self.state.get(
+                "reject_reason", np.asarray([""] * (self.N + 1), dtype=object)
+            ).copy(),
             "soc": float(self.state["soc"]),
             "truck_pickup_load": float(self.state["truck_pickup_load"]),
             "pending_queue": list(self.state["pending_queue"]),
@@ -403,10 +448,11 @@ class TruckDroneRendezvousEnv:
         back_payload = weight if req_type == REQUEST_PICKUP else 0.0
         coef = float(self.cfg.energy_per_dist)
         payload_factor = float(self.cfg.payload_energy_factor)
-        return coef * (
+        distance_energy = coef * (
             leg_out * (1.0 + payload_factor * out_payload)
             + leg_back * (1.0 + payload_factor * back_payload)
         )
+        return float(distance_energy + float(self.cfg.drone_takeoff_landing_energy))
 
     def _combined_load_feasible(
         self,
@@ -604,9 +650,14 @@ class TruckDroneRendezvousEnv:
         rejected = np.zeros((self.N + 1,), dtype=np.int8)
         known = np.zeros((self.N + 1,), dtype=np.int8)
         loaded = np.zeros((self.N + 1,), dtype=np.int8)
+        expired = np.zeros((self.N + 1,), dtype=np.int8)
+        accept_time = np.full((self.N + 1,), np.nan, dtype=np.float32)
+        finish_time = np.full((self.N + 1,), np.nan, dtype=np.float32)
+        reject_reason = np.asarray([""] * (self.N + 1), dtype=object)
         pending_queue: List[int] = []
 
         accepted[(np.arange(self.N + 1) > 0) & (self.is_dynamic == 0)] = 1
+        accept_time[(np.arange(self.N + 1) > 0) & (self.is_dynamic == 0)] = 0.0
         known[(np.arange(self.N + 1) == 0) | (accepted > 0)] = 1
 
         truck_pickup_load = 0.0
@@ -617,7 +668,7 @@ class TruckDroneRendezvousEnv:
             loaded=loaded,
             truck_pickup_load=truck_pickup_load,
         )
-        known, rejected, pending_queue, _, _ = self._resolve_pending_queue(
+        known, rejected, pending_queue, _, expired_nodes = self._resolve_pending_queue(
             t=0.0,
             known=known,
             accepted=accepted,
@@ -625,6 +676,9 @@ class TruckDroneRendezvousEnv:
             served=served,
             pending_queue=pending_queue,
         )
+        for node in expired_nodes:
+            expired[int(node)] = 1
+            reject_reason[int(node)] = "expired_response_window"
 
         self.state = {
             "t": 0.0,
@@ -632,8 +686,12 @@ class TruckDroneRendezvousEnv:
             "served": served,
             "accepted": accepted,
             "rejected": rejected,
+            "expired": expired,
             "known": known,
             "loaded": loaded,
+            "accept_time": accept_time,
+            "finish_time": finish_time,
+            "reject_reason": reject_reason,
             "soc": float(np.clip(float(self.cfg.soc_init), 0.0, 1.0)),
             "truck_pickup_load": truck_pickup_load,
             "pending_queue": pending_queue,
@@ -645,8 +703,12 @@ class TruckDroneRendezvousEnv:
         served = self.state["served"].copy()
         accepted = self.state["accepted"].copy()
         rejected = self.state["rejected"].copy()
+        expired = self.state.get("expired", np.zeros_like(served)).copy()
         known = self.state["known"].copy()
         loaded = self.state["loaded"].copy()
+        accept_time = self.state.get("accept_time", np.full((self.N + 1,), np.nan, dtype=np.float32)).copy()
+        finish_time = self.state.get("finish_time", np.full((self.N + 1,), np.nan, dtype=np.float32)).copy()
+        reject_reason = self.state.get("reject_reason", np.asarray([""] * (self.N + 1), dtype=object)).copy()
         truck_pickup_load = float(self.state["truck_pickup_load"])
         truck_load = self._truck_total_load(
             accepted=accepted,
@@ -656,15 +718,19 @@ class TruckDroneRendezvousEnv:
         )
         pending_queue = list(self.state["pending_queue"])
         current_request = self._current_decision_request(pending_queue)
-        return {
+        obs = {
             "t": t,
             "clock_time": self.get_clock_time(t_elapsed=t),
             "i": int(self.state["i"]),
             "served": served,
             "accepted": accepted,
             "rejected": rejected,
+            "expired": expired,
             "known": known,
             "loaded": loaded,
+            "accept_time": accept_time,
+            "finish_time": finish_time,
+            "reject_reason": reject_reason,
             "soc": float(self.state["soc"]),
             "truck_pickup_load": truck_pickup_load,
             "truck_load": truck_load,
@@ -682,6 +748,26 @@ class TruckDroneRendezvousEnv:
             "is_peak": self.get_is_peak(t_elapsed=t),
             "remaining_work_time": float(self.max_work_time - t),
         }
+        if bool(self.cfg.enable_sequence_time_window_features):
+            stats = compute_global_sequence_tw_stats(self, obs)
+            obs.update(
+                {
+                    "sequence_tw_stats": stats,
+                    "remaining_orders_count": stats["remaining_orders_count"],
+                    "remaining_tight_orders_count": stats["remaining_tight_orders_count"],
+                    "minimum_slack_among_remaining_orders": stats["minimum_slack_among_remaining_orders"],
+                    "average_slack_among_remaining_orders": stats["average_slack_among_remaining_orders"],
+                    "number_of_orders_predicted_late_if_delayed": stats[
+                        "number_of_orders_predicted_late_if_delayed"
+                    ],
+                    "current_global_lateness_risk": stats["current_global_lateness_risk"],
+                    "workload_balance_score": stats["workload_balance_score"],
+                    "future_available_time": t,
+                    "predicted_finish_time": t,
+                    "utilization_so_far": 1.0 - float(self.state["soc"]),
+                }
+            )
+        return obs
 
     def get_masks(self, j: Optional[int] = None) -> Dict[str, Any]:
         t = float(self.state["t"])
@@ -775,8 +861,12 @@ class TruckDroneRendezvousEnv:
         served = self.state["served"].copy()
         accepted = self.state["accepted"].copy()
         rejected = self.state["rejected"].copy()
+        expired = self.state.get("expired", np.zeros_like(served)).copy()
         known = self.state["known"].copy()
         loaded = self.state["loaded"].copy()
+        accept_time = self.state.get("accept_time", np.full((self.N + 1,), np.nan, dtype=np.float32)).copy()
+        finish_time = self.state.get("finish_time", np.full((self.N + 1,), np.nan, dtype=np.float32)).copy()
+        reject_reason = self.state.get("reject_reason", np.asarray([""] * (self.N + 1), dtype=object)).copy()
         soc = float(self.state["soc"])
         truck_pickup_load = float(self.state["truck_pickup_load"])
         pending_queue = list(self.state["pending_queue"])
@@ -788,6 +878,18 @@ class TruckDroneRendezvousEnv:
             loaded=loaded,
             truck_pickup_load=truck_pickup_load,
         )
+        pre_sequence_tw_pressure = {}
+        if bool(self.cfg.enable_sequence_time_window_reward):
+            pre_sequence_tw_pressure = sequence_tw_pressure(
+                self,
+                t=t,
+                i=i,
+                accepted=accepted,
+                served=served,
+                rejected=rejected,
+                loaded=loaded,
+                truck_pickup_load=truck_pickup_load,
+            )
         current_request = self._current_decision_request(pending_queue)
 
         if current_request is not None:
@@ -802,9 +904,13 @@ class TruckDroneRendezvousEnv:
             decision = "reject" if j == 0 else "accept"
             if decision == "reject":
                 rejected[current_request] = 1
+                reject_reason[current_request] = "policy_reject"
                 reject_cost = float(self.cfg.reject_penalty)
+                accept_reward = 0.0
             else:
                 accepted[current_request] = 1
+                accept_time[current_request] = float(t)
+                accept_reward = float(self.cfg.accept_reward)
                 if i == 0:
                     loaded = self._reload_from_depot(
                         accepted=accepted,
@@ -822,7 +928,11 @@ class TruckDroneRendezvousEnv:
                 served=served,
                 pending_queue=pending_queue,
             )
-            step_cost = reject_cost + auto_reject_cost
+            for node in expired_nodes:
+                expired[int(node)] = 1
+                reject_reason[int(node)] = "expired_response_window"
+            expired_order_cost = float(self.cfg.expired_order_penalty) * float(len(expired_nodes))
+            step_cost = reject_cost + auto_reject_cost + expired_order_cost - accept_reward
 
             self.state = {
                 "t": t,
@@ -830,8 +940,12 @@ class TruckDroneRendezvousEnv:
                 "served": served,
                 "accepted": accepted,
                 "rejected": rejected,
+                "expired": expired,
                 "known": known,
                 "loaded": loaded,
+                "accept_time": accept_time,
+                "finish_time": finish_time,
+                "reject_reason": reject_reason,
                 "soc": soc,
                 "truck_pickup_load": truck_pickup_load,
                 "pending_queue": pending_queue,
@@ -853,7 +967,15 @@ class TruckDroneRendezvousEnv:
                 "overtime_cost": 0.0,
                 "reject_cost": float(reject_cost),
                 "auto_reject_cost": float(auto_reject_cost),
+                "accept_reward": float(accept_reward),
+                "on_time_reward": 0.0,
+                "late_count_cost": 0.0,
+                "severe_lateness_cost": 0.0,
                 "expired_nodes": expired_nodes,
+                "reject_reason": str(reject_reason[current_request]),
+                "served_nodes": [],
+                "service_finish_times": {},
+                "service_lateness": {},
                 "revenue_gained": 0.0,
                 "step_cost": float(step_cost),
                 "soc_prev": float(soc),
@@ -868,6 +990,7 @@ class TruckDroneRendezvousEnv:
                     )
                 ),
                 "energy_use": 0.0,
+                "drone_idle_energy_use": 0.0,
                 "truck_energy_use": 0.0,
                 "i": int(i),
                 "j": int(j),
@@ -880,6 +1003,13 @@ class TruckDroneRendezvousEnv:
                 "left_turn_count": 0.0,
                 "u_turn_count": 0.0,
                 "one_way_factor": 1.0,
+                "reward_components": {
+                    "reject_cost": float(reject_cost),
+                    "auto_reject_cost": float(auto_reject_cost),
+                    "expired_order_cost": float(expired_order_cost),
+                    "accept_reward": float(accept_reward),
+                    "sequence_tw_total_cost": 0.0,
+                },
             }
             return self.get_obs(), -float(step_cost), done, info
 
@@ -938,6 +1068,9 @@ class TruckDroneRendezvousEnv:
             dt = wait_time
             truck_time = wait_time
 
+        drone_idle_energy = float(self.cfg.drone_idle_energy_per_time) * float(wait_time)
+        drone_energy += drone_idle_energy
+
         t_next = t + dt
         finish_j = t + truck_time
         finish_k = t + drone_time
@@ -945,26 +1078,39 @@ class TruckDroneRendezvousEnv:
 
         lateness = 0.0
         revenue_gained = 0.0
+        served_nodes: List[int] = []
+        service_finish_times: Dict[str, float] = {}
+        service_lateness: Dict[str, float] = {}
         if j != 0 and truck_service > 0.0:
             served[j] = 1
+            finish_time[j] = float(finish_j)
             if int(self.request_type[j]) == REQUEST_DELIVERY:
                 loaded[j] = 0
             elif int(self.request_type[j]) == REQUEST_PICKUP:
                 truck_pickup_load += self._request_weight(j)
-            lateness += self._lateness(j, finish_j)
+            node_late = self._lateness(j, finish_j)
+            lateness += node_late
+            served_nodes.append(int(j))
+            service_finish_times[str(int(j))] = float(finish_j)
+            service_lateness[str(int(j))] = float(node_late)
             revenue_gained += float(self.revenue[j]) * float(self.cfg.revenue_scale)
 
         if k != self.K_NONE:
             served[k] = 1
+            finish_time[k] = float(finish_k)
             if int(self.request_type[k]) == REQUEST_DELIVERY:
                 loaded[k] = 0
             elif int(self.request_type[k]) == REQUEST_PICKUP:
                 truck_pickup_load += self._request_weight(k)
-            lateness += self._lateness(k, finish_k)
+            node_late = self._lateness(k, finish_k)
+            lateness += node_late
+            served_nodes.append(int(k))
+            service_finish_times[str(int(k))] = float(finish_k)
+            service_lateness[str(int(k))] = float(node_late)
             revenue_gained += float(self.revenue[k]) * float(self.cfg.revenue_scale)
 
         if k == self.K_NONE:
-            soc_after = soc
+            soc_after = max(0.0, soc - drone_energy)
             recharge_time = dt
         else:
             soc_after = max(0.0, soc - drone_energy)
@@ -989,13 +1135,133 @@ class TruckDroneRendezvousEnv:
             served=served,
             pending_queue=pending_queue,
         )
+        for node in expired_nodes:
+            expired[int(node)] = 1
+            reject_reason[int(node)] = "expired_response_window"
+        expired_order_cost = float(self.cfg.expired_order_penalty) * float(len(expired_nodes))
 
         overtime_inc = max(0.0, t_next - self.max_work_time) - base_overtime
         time_cost = float(self.cfg.time_cost_weight) * dt
-        lateness_cost = float(self.cfg.lateness_penalty) * lateness
-        energy_cost = float(self.cfg.energy_cost_weight) * (truck_energy + drone_energy)
+        late_served_count = float(sum(1 for v in service_lateness.values() if float(v) > 1e-9))
+        on_time_served_count = float(len(service_lateness) - int(late_served_count))
+        max_step_lateness = float(max([0.0] + [float(v) for v in service_lateness.values()]))
+        on_time_reward = float(self.cfg.on_time_reward) * on_time_served_count
+        drone_distance = 0.0
+        if k != self.K_NONE:
+            drone_distance = float(self.dist_mat[i, k]) + float(self.dist_mat[k, j])
+        truck_distance = float(dense[i, j, 0])
+        truck_load_next_for_cost = self._truck_total_load(
+            accepted=accepted,
+            served=served,
+            loaded=loaded,
+            truck_pickup_load=truck_pickup_load,
+        )
+        reward_components: Dict[str, float] = {}
+        if bool(self.cfg.enable_sequence_time_window_reward):
+            post_pressure = sequence_tw_pressure(
+                self,
+                t=t_next,
+                i=i_next,
+                accepted=accepted,
+                served=served,
+                rejected=rejected,
+                loaded=loaded,
+                truck_pickup_load=truck_pickup_load,
+            )
+            hard_info = {
+                "k": int(k),
+                "energy_use": float(drone_energy),
+                "soc_prev": float(soc),
+                "drone_time": float(drone_time),
+                "truck_load_next": float(truck_load_next_for_cost),
+            }
+            seq_components = sequence_tw_reward_components(
+                self,
+                pre_pressure=pre_sequence_tw_pressure,
+                post_pressure=post_pressure,
+                dt=dt,
+                late_served_count=late_served_count,
+                total_lateness=lateness,
+                max_step_lateness=max_step_lateness,
+                truck_distance=truck_distance,
+                drone_distance=drone_distance,
+                energy_use=truck_energy + drone_energy,
+                info_for_hard=hard_info,
+            )
+            lateness_cost = float(seq_components["lateness_duration_cost"])
+            late_count_cost = float(seq_components["late_order_cost"])
+            severe_lateness_cost = float(seq_components["severe_lateness_cost"])
+            energy_cost = float(seq_components["energy_cost"])
+            distance_cost = float(seq_components["distance_cost"])
+            max_lateness_cost = float(seq_components["max_lateness_cost"])
+            future_lateness_risk_cost = float(seq_components["future_lateness_risk_cost"])
+            tight_order_delay_cost = float(seq_components["tight_order_delay_cost"])
+            slack_reward = float(seq_components["slack_preservation_reward"])
+            hard_constraint_cost = float(seq_components["hard_constraint_cost"])
+            severe_future_lateness_cost = float(seq_components["severe_future_lateness_cost"])
+            max_lateness_proxy_cost = float(seq_components["max_lateness_proxy_cost"])
+            workload_imbalance_cost = float(seq_components["workload_imbalance_cost"])
+            reward_components.update(seq_components)
+        else:
+            lateness_cost = float(self.cfg.lateness_penalty) * lateness
+            late_count_cost = float(self.cfg.late_count_penalty) * late_served_count
+            severe_lateness_cost = float(self.cfg.severe_lateness_penalty) * max_step_lateness
+            energy_cost = float(self.cfg.energy_cost_weight) * (truck_energy + drone_energy)
+            distance_cost = 0.0
+            max_lateness_cost = 0.0
+            future_lateness_risk_cost = 0.0
+            tight_order_delay_cost = 0.0
+            slack_reward = 0.0
+            hard_constraint_cost = 0.0
+            severe_future_lateness_cost = 0.0
+            max_lateness_proxy_cost = 0.0
+            workload_imbalance_cost = 0.0
         overtime_cost = float(self.cfg.overtime_penalty) * overtime_inc
-        step_cost = time_cost + lateness_cost + energy_cost + overtime_cost + auto_reject_cost - revenue_gained
+        step_cost = (
+            time_cost
+            + lateness_cost
+            + late_count_cost
+            + severe_lateness_cost
+            + energy_cost
+            + distance_cost
+            + max_lateness_cost
+            + future_lateness_risk_cost
+            + tight_order_delay_cost
+            + severe_future_lateness_cost
+            + max_lateness_proxy_cost
+            + workload_imbalance_cost
+            + hard_constraint_cost
+            + overtime_cost
+            + auto_reject_cost
+            + expired_order_cost
+            - revenue_gained
+            - on_time_reward
+            - slack_reward
+        )
+        reward_components.update(
+            {
+                "time_cost": float(time_cost),
+                "lateness_cost": float(lateness_cost),
+                "late_count_cost": float(late_count_cost),
+                "severe_lateness_cost": float(severe_lateness_cost),
+                "max_lateness_cost": float(max_lateness_cost),
+                "future_lateness_risk_cost": float(future_lateness_risk_cost),
+                "tight_order_delay_cost": float(tight_order_delay_cost),
+                "severe_future_lateness_cost": float(severe_future_lateness_cost),
+                "max_lateness_proxy_cost": float(max_lateness_proxy_cost),
+                "workload_imbalance_cost": float(workload_imbalance_cost),
+                "slack_preservation_reward": float(slack_reward),
+                "energy_cost": float(energy_cost),
+                "distance_cost": float(distance_cost),
+                "hard_constraint_cost": float(hard_constraint_cost),
+                "overtime_cost": float(overtime_cost),
+                "auto_reject_cost": float(auto_reject_cost),
+                "expired_order_cost": float(expired_order_cost),
+                "on_time_reward": float(on_time_reward),
+                "revenue_gained": float(revenue_gained),
+                "sequence_tw_enabled": 1.0 if bool(self.cfg.enable_sequence_time_window_reward) else 0.0,
+            }
+        )
 
         self.state = {
             "t": float(t_next),
@@ -1003,20 +1269,19 @@ class TruckDroneRendezvousEnv:
             "served": served,
             "accepted": accepted,
             "rejected": rejected,
+            "expired": expired,
             "known": known,
             "loaded": loaded,
+            "accept_time": accept_time,
+            "finish_time": finish_time,
+            "reject_reason": reject_reason,
             "soc": float(soc_next),
             "truck_pickup_load": float(truck_pickup_load),
             "pending_queue": pending_queue,
         }
 
         done = self._step_done(served=served, rejected=rejected, pending_queue=pending_queue)
-        truck_load_next = self._truck_total_load(
-            accepted=accepted,
-            served=served,
-            loaded=loaded,
-            truck_pickup_load=truck_pickup_load,
-        )
+        truck_load_next = truck_load_next_for_cost
         info = {
             "phase": "route" if wait_time <= 1e-9 else "wait",
             "decision": None,
@@ -1032,7 +1297,14 @@ class TruckDroneRendezvousEnv:
             "overtime_cost": float(overtime_cost),
             "reject_cost": 0.0,
             "auto_reject_cost": float(auto_reject_cost),
+            "accept_reward": 0.0,
+            "on_time_reward": float(on_time_reward),
+            "late_count_cost": float(late_count_cost),
+            "severe_lateness_cost": float(severe_lateness_cost),
             "expired_nodes": expired_nodes,
+            "served_nodes": served_nodes,
+            "service_finish_times": service_finish_times,
+            "service_lateness": service_lateness,
             "revenue_gained": float(revenue_gained),
             "step_cost": float(step_cost),
             "soc_prev": float(soc),
@@ -1040,6 +1312,7 @@ class TruckDroneRendezvousEnv:
             "truck_load_prev": float(truck_load_prev),
             "truck_load_next": float(truck_load_next),
             "energy_use": float(drone_energy),
+            "drone_idle_energy_use": float(drone_idle_energy),
             "truck_energy_use": float(truck_energy),
             "i": int(i),
             "j": int(j),
@@ -1052,5 +1325,6 @@ class TruckDroneRendezvousEnv:
             "left_turn_count": float(dense[i, j, 5]),
             "u_turn_count": float(dense[i, j, 6]),
             "one_way_factor": float(dense[i, j, 7]),
+            "reward_components": reward_components,
         }
         return self.get_obs(), -float(step_cost), done, info
