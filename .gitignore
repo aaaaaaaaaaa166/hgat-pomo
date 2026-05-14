@@ -11,7 +11,7 @@ __pycache__/
 *.pth
 *.ckpt
 checkpoints/
-models/
+/models/
 
 # Smoke/debug runs are useful while developing, but not for the thesis archive.
 experiments/smoke_checks_20260402/
