@@ -22,6 +22,9 @@ class HGATPolicy(nn.Module):
         num_encoder_layers: int = 2,
         tanh_clipping: float = 10.0,
         temperature: float = 1.0,
+        order_feature_dim: int = 12,
+        truck_feature_dim: int = 6,
+        drone_feature_dim: int = 6,
     ):
         super().__init__()
         self.encoder = LiteHGATEncoder(
@@ -29,6 +32,9 @@ class HGATPolicy(nn.Module):
             heads=heads,
             dropout=dropout,
             num_layers=num_encoder_layers,
+            order_feature_dim=order_feature_dim,
+            truck_feature_dim=truck_feature_dim,
+            drone_feature_dim=drone_feature_dim,
         )
         self.decoder = TwoStageDecoder(
             hidden_dim=hidden_dim,

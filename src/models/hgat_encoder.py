@@ -75,13 +75,22 @@ class _HeteroAttnBlock(nn.Module):
 class LiteHGATEncoder(nn.Module):
     """先投影不同类型节点特征，再堆叠异构注意力块。"""
 
-    def __init__(self, hidden_dim: int = 128, heads: int = 4, dropout: float = 0.0, num_layers: int = 2):
+    def __init__(
+        self,
+        hidden_dim: int = 128,
+        heads: int = 4,
+        dropout: float = 0.0,
+        num_layers: int = 2,
+        order_feature_dim: int = 12,
+        truck_feature_dim: int = 6,
+        drone_feature_dim: int = 6,
+    ):
         super().__init__()
 
         self.proj = nn.ModuleDict({
-            "order": nn.Linear(12, hidden_dim),
-            "truck": nn.Linear(6, hidden_dim),
-            "drone": nn.Linear(6, hidden_dim),
+            "order": nn.Linear(int(order_feature_dim), hidden_dim),
+            "truck": nn.Linear(int(truck_feature_dim), hidden_dim),
+            "drone": nn.Linear(int(drone_feature_dim), hidden_dim),
         })
         self.blocks = nn.ModuleList([
             _HeteroAttnBlock(hidden_dim=hidden_dim, heads=heads, dropout=dropout)
