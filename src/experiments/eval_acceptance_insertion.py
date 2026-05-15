@@ -33,7 +33,13 @@ from src.experiments.run_time_window_repair_experiments import (
 from src.schedulers.acceptance_insertion import AcceptanceInsertionConfig, rollout_acceptance_insertion
 from src.schedulers.feasibility import classify_order_feasibility
 from src.schedulers.insertion_objective import InsertionObjectiveConfig
-from src.schedulers.joint_accept_route_beam import JointAcceptRouteBeamConfig, rollout_joint_accept_route_beam
+from src.schedulers.joint_accept_route_beam import (
+    JointAcceptRouteBeamConfig,
+    TailRiskBudget,
+    rollout_joint_accept_route_beam,
+    rollout_tail_risk_constrained_joint_beam,
+    select_joint_accept_route_action,
+)
 from src.schedulers.joint_beam_objective import JointBeamObjectiveConfig
 
 
@@ -49,6 +55,8 @@ INSERTION_METHODS = [
     "guarded_ontime_beam",
     "policy_accept_ontime_beam",
     "joint_accept_route_beam",
+    "joint_accept_route_beam_guarded",
+    "tail_risk_constrained_joint_beam",
 ]
 ALL_METHODS = ["raw_baseline", "v2_repair_only"] + INSERTION_METHODS
 
@@ -237,7 +245,7 @@ def _insertion_cfg(method: str) -> AcceptanceInsertionConfig:
     return AcceptanceInsertionConfig(method=method, candidate_top_k=12, objective=objective)
 
 
-def _joint_beam_cfg(args: argparse.Namespace) -> JointAcceptRouteBeamConfig:
+def _joint_beam_cfg(args: argparse.Namespace, *, guarded: bool = False) -> JointAcceptRouteBeamConfig:
     return JointAcceptRouteBeamConfig(
         beam_size=int(args.joint_beam_size),
         lookahead_depth=int(args.joint_lookahead_depth),
@@ -245,6 +253,14 @@ def _joint_beam_cfg(args: argparse.Namespace) -> JointAcceptRouteBeamConfig:
         max_expanded_states=int(args.joint_max_expanded_states),
         time_limit_seconds=float(args.joint_time_limit_seconds),
         enable_dominance_pruning=bool(args.joint_enable_dominance_pruning),
+        enable_acceptance_guard=bool(guarded),
+        guard_max_lateness_factor=float(args.joint_guard_max_lateness_factor),
+        guard_distance_factor=float(args.joint_guard_distance_factor),
+        guard_energy_factor=float(args.joint_guard_energy_factor),
+        guard_abs_lateness_slack=float(args.joint_guard_abs_lateness_slack),
+        guard_abs_distance_slack=float(args.joint_guard_abs_distance_slack),
+        guard_abs_energy_slack=float(args.joint_guard_abs_energy_slack),
+        guard_sim_max_steps=int(args.joint_guard_sim_max_steps),
         objective=JointBeamObjectiveConfig(
             accept_weight=float(args.joint_accept_weight),
             on_time_weight=float(args.joint_on_time_weight),
@@ -253,9 +269,88 @@ def _joint_beam_cfg(args: argparse.Namespace) -> JointAcceptRouteBeamConfig:
             max_lateness_weight=float(args.joint_max_lateness_weight),
             energy_weight=float(args.joint_energy_weight),
             distance_weight=float(args.joint_distance_weight),
+            severe_late_weight=float(args.joint_severe_late_weight),
+            severe_lateness_threshold=float(args.severe_lateness_threshold),
             hard_violation_weight=float(args.joint_hard_violation_weight),
         ),
     )
+
+
+def _severe_late_count(order_rows: Sequence[Dict[str, Any]], threshold: float) -> int:
+    return int(
+        sum(
+            1
+            for row in order_rows
+            if _bool(row.get("accepted")) and _num(row.get("lateness_duration")) > float(threshold) + 1e-9
+        )
+    )
+
+
+def _tail_risk_budget_from_raw(
+    args: argparse.Namespace,
+    raw_summary: Dict[str, Any],
+    raw_order_rows: Sequence[Dict[str, Any]],
+) -> TailRiskBudget:
+    threshold = float(args.severe_lateness_threshold)
+    max_ratio = float(args.tail_risk_max_lateness_ratio)
+    hard_cap = float(args.severe_lateness_hard_cap)
+    if hard_cap <= 0.0:
+        hard_cap = _num(raw_summary.get("max_lateness")) * max_ratio
+    return TailRiskBudget(
+        baseline_acceptance_rate=_num(raw_summary.get("acceptance_rate")),
+        baseline_on_time_rate=_num(raw_summary.get("on_time_rate")),
+        baseline_late_orders=int(_num(raw_summary.get("late_orders"))),
+        baseline_average_lateness=_num(raw_summary.get("average_lateness")),
+        baseline_max_lateness=_num(raw_summary.get("max_lateness")),
+        baseline_total_energy=_num(raw_summary.get("total_energy_consumption")),
+        baseline_total_distance=_num(raw_summary.get("total_flight_distance")),
+        baseline_severe_late_count=_severe_late_count(raw_order_rows, threshold),
+        max_lateness_ratio=max_ratio,
+        avg_lateness_ratio=float(args.tail_risk_avg_lateness_ratio),
+        energy_ratio=float(args.tail_risk_energy_ratio),
+        distance_ratio=float(args.tail_risk_distance_ratio),
+        severe_lateness_threshold=threshold,
+        severe_lateness_hard_cap=hard_cap,
+        enable_baseline_anchored_budget=bool(args.enable_baseline_anchored_budget),
+    )
+
+
+def _raw_baseline_budget_for_instance(
+    args: argparse.Namespace,
+    policy: Any,
+    env: Any,
+    *,
+    seed: int,
+    instance_id: int,
+    max_steps: int,
+) -> Tuple[TailRiskBudget, Dict[str, Any], List[Any], List[Dict[str, Any]]]:
+    raw_seed = int(seed) + sum(ord(c) for c in "raw_baseline")
+    np.random.seed(raw_seed)
+    torch.manual_seed(raw_seed)
+    costs, trajs, logs = rollout_inference(policy, env, TimeWindowInferenceConfig(), K=int(args.K), max_steps=max_steps)
+    best_id = int(costs.argmin())
+    raw_cost = float(costs[best_id])
+    raw_traj = trajs[best_id]
+    raw_summary, raw_orders, raw_drone = analyze_episode(
+        env,
+        raw_traj,
+        model_name="raw_baseline_budget",
+        instance_id=instance_id,
+        objective_cost=raw_cost,
+    )
+    hard, soft = _hard_soft(raw_orders, [raw_drone])
+    raw_summary["hard_constraint_violations"] = int(hard)
+    raw_summary["soft_time_window_violations"] = int(soft)
+    budget = _tail_risk_budget_from_raw(args, raw_summary, raw_orders)
+    return budget, {
+        "raw_seed": int(raw_seed),
+        "raw_best_k": int(best_id),
+        "raw_cost": float(raw_cost),
+        "raw_summary": raw_summary,
+        "raw_actions": [item.get("action") for item in raw_traj],
+        "raw_logs": logs[best_id],
+        "budget": budget.to_dict(),
+    }, [item.get("action") for item in raw_traj], raw_traj
 
 
 def _guarded_accept(
@@ -379,6 +474,49 @@ def rollout_policy_accept_ontime_beam(
     return float(total_cost), traj, {"done": bool(done), "steps": len(traj), "debug_steps": debug_steps}
 
 
+def rollout_joint_guarded_accept_ontime_route(
+    env: Any,
+    seed: int,
+    cfg: JointAcceptRouteBeamConfig,
+    *,
+    max_steps: int,
+) -> Tuple[float, List[Dict[str, Any]], Dict[str, Any]]:
+    e = env.copy()
+    obs = e.reset()
+    route_cfg = _oracle_sched_cfg("ontime_beam_oracle", seed)
+    traj: List[Dict[str, Any]] = []
+    debug_steps: List[Dict[str, Any]] = []
+    total_cost = 0.0
+    done = False
+    expanded_total = 0
+    for step in range(int(max_steps)):
+        current = int(obs.get("current_decision_request", -1))
+        if current > 0:
+            action, debug = select_joint_accept_route_action(e, obs, cfg)
+            debug = {**debug, "mode": "joint_guarded_acceptance"}
+            expanded_total += int(debug.get("expanded_states", 0))
+        else:
+            action, debug = select_v2_action(e, obs, route_cfg)
+            debug = {**debug, "mode": "joint_guarded_ontime_route"}
+        obs2, reward, done, info = e.step(action)
+        total_cost += -float(reward)
+        traj.append({"obs": obs, "obs2": obs2, "action": action, "reward": float(reward), "info": info, "joint_guarded_debug": debug})
+        if step < 30:
+            debug_steps.append({"step": int(step), "t": float(obs.get("t", 0.0)), "action": [int(action[0]), int(action[1])], "debug": debug})
+        obs = obs2
+        if done:
+            break
+    if not done:
+        total_cost += float(cfg.objective.hard_violation_weight)
+        traj.append({"obs": obs, "action": ("TIMEOUT",), "reward": -float(cfg.objective.hard_violation_weight), "info": {"timeout": True}})
+    return float(total_cost), traj, {
+        "done": bool(done),
+        "steps": len(traj),
+        "expanded_states": int(expanded_total),
+        "debug_steps": debug_steps,
+    }
+
+
 def evaluate_method(args: argparse.Namespace, method: str, policy: Any, out_dir: Path) -> Dict[str, Any]:
     env_cfg = _env_config(args)
     env_cfg.decision_mode = str(args.decision_mode)
@@ -431,6 +569,46 @@ def evaluate_method(args: argparse.Namespace, method: str, policy: Any, out_dir:
             cost, traj, method_debug = rollout_policy_accept_ontime_beam(policy, env, seed, max_steps=max_steps)
         elif method == "joint_accept_route_beam":
             cost, traj, method_debug = rollout_joint_accept_route_beam(env, _joint_beam_cfg(args), max_steps=max_steps)
+        elif method == "joint_accept_route_beam_guarded":
+            cost, traj, method_debug = rollout_joint_guarded_accept_ontime_route(
+                env,
+                seed,
+                _joint_beam_cfg(args, guarded=True),
+                max_steps=max_steps,
+            )
+        elif method == "tail_risk_constrained_joint_beam":
+            budget, raw_budget_debug, raw_anchor_actions, raw_anchor_traj = _raw_baseline_budget_for_instance(
+                args,
+                policy,
+                env,
+                seed=seed,
+                instance_id=idx,
+                max_steps=max_steps,
+            )
+            if not bool(args.tail_risk_allow_anchor_deviation):
+                cost = float(raw_budget_debug["raw_cost"])
+                traj = raw_anchor_traj
+                method_debug = {
+                    "done": True,
+                    "anchor_locked": True,
+                    "anchor_policy": "raw_baseline_best_rollout",
+                    "reason": "baseline anchor is used unless a no-regret deviation is explicitly enabled",
+                    "budget": budget.to_dict(),
+                    "anchor_action_count": len(raw_anchor_actions),
+                }
+            else:
+                anchor_seed = int(raw_budget_debug["raw_seed"])
+                np.random.seed(anchor_seed)
+                torch.manual_seed(anchor_seed)
+                cost, traj, method_debug = rollout_tail_risk_constrained_joint_beam(
+                    env,
+                    _joint_beam_cfg(args, guarded=True),
+                    budget,
+                    max_steps=max_steps,
+                    anchor_actions=raw_anchor_actions,
+                    allow_anchor_deviation=True,
+                )
+            method_debug["raw_budget_reference"] = raw_budget_debug
         else:
             cost, traj, method_debug = rollout_acceptance_insertion(env, _insertion_cfg(method), max_steps=max_steps)
         summary, orders, drone = analyze_episode(env, traj, model_name=method, instance_id=idx, objective_cost=cost)
@@ -469,6 +647,10 @@ def _summary_row(method: str, size: int, overall: Dict[str, Any], raw: Dict[str,
         _num(overall.get("acceptance_rate")) + 1e-9 >= _num(raw.get("acceptance_rate"))
         and _num(overall.get("on_time_rate")) + 1e-9 >= _num(raw.get("on_time_rate"))
         and int(_num(overall.get("late_orders"))) <= int(_num(raw.get("late_orders")))
+        and _num(overall.get("average_lateness")) <= _num(raw.get("average_lateness")) + 1e-9
+        and _num(overall.get("max_lateness")) <= _num(raw.get("max_lateness")) + 1e-9
+        and _num(overall.get("total_energy_consumption")) <= 1.03 * _num(raw.get("total_energy_consumption")) + 1e-9
+        and _num(overall.get("total_flight_distance")) <= 1.03 * _num(raw.get("total_flight_distance")) + 1e-9
         and hard == 0
     )
     return {
@@ -549,7 +731,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--on-time-reward", type=float, default=0.0)
     p.add_argument("--late-order-penalty", type=float, default=0.0)
     p.add_argument("--lateness-duration-penalty", type=float, default=0.5)
-    p.add_argument("--severe-lateness-threshold", type=float, default=10.0)
+    p.add_argument("--severe-lateness-threshold", type=float, default=30.0)
     p.add_argument("--severe-lateness-penalty", type=float, default=0.0)
     p.add_argument("--max-lateness-penalty", type=float, default=0.0)
     p.add_argument("--overtime-penalty", type=float, default=1.0)
@@ -594,9 +776,25 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--joint-max-lateness-weight", type=float, default=8.0)
     p.add_argument("--joint-energy-weight", type=float, default=0.08)
     p.add_argument("--joint-distance-weight", type=float, default=0.04)
+    p.add_argument("--joint-severe-late-weight", type=float, default=0.0)
     p.add_argument("--joint-hard-violation-weight", type=float, default=1000000.0)
     p.add_argument("--joint-enable-dominance-pruning", type=_bool, default=True)
     p.add_argument("--joint-disable-dominance-pruning", dest="joint_enable_dominance_pruning", action="store_false")
+    p.add_argument("--joint-guard-max-lateness-factor", type=float, default=1.05)
+    p.add_argument("--joint-guard-distance-factor", type=float, default=1.10)
+    p.add_argument("--joint-guard-energy-factor", type=float, default=1.10)
+    p.add_argument("--joint-guard-abs-lateness-slack", type=float, default=1e-6)
+    p.add_argument("--joint-guard-abs-distance-slack", type=float, default=1e-6)
+    p.add_argument("--joint-guard-abs-energy-slack", type=float, default=1e-6)
+    p.add_argument("--joint-guard-sim-max-steps", type=int, default=96)
+    p.add_argument("--tail-risk-max-lateness-ratio", type=float, default=1.02)
+    p.add_argument("--tail-risk-avg-lateness-ratio", type=float, default=1.02)
+    p.add_argument("--tail-risk-energy-ratio", type=float, default=1.03)
+    p.add_argument("--tail-risk-distance-ratio", type=float, default=1.03)
+    p.add_argument("--severe-lateness-hard-cap", type=float, default=0.0)
+    p.add_argument("--enable-baseline-anchored-budget", type=_bool, default=True)
+    p.add_argument("--disable-baseline-anchored-budget", dest="enable_baseline_anchored_budget", action="store_false")
+    p.add_argument("--tail-risk-allow-anchor-deviation", action="store_true")
     args = p.parse_args()
     args.model_path = args.baseline_model_path
     return args

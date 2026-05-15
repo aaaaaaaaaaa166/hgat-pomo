@@ -14,6 +14,8 @@ class JointBeamObjectiveConfig:
     max_lateness_weight: float = 8.0
     energy_weight: float = 0.08
     distance_weight: float = 0.04
+    severe_late_weight: float = 0.0
+    severe_lateness_threshold: float = 30.0
     hard_violation_weight: float = 1_000_000.0
 
     def to_dict(self) -> Dict[str, float]:
@@ -25,6 +27,7 @@ class JointBeamMetrics:
     accepted_orders: int = 0
     on_time_orders: int = 0
     late_orders: int = 0
+    severe_late_count: int = 0
     total_lateness: float = 0.0
     max_lateness: float = 0.0
     total_energy: float = 0.0
@@ -36,6 +39,7 @@ class JointBeamMetrics:
 
     def to_dict(self) -> Dict[str, Any]:
         out = asdict(self)
+        out["average_lateness"] = average_lateness(self)
         out["total_lateness"] = float(out["total_lateness"])
         out["max_lateness"] = float(out["max_lateness"])
         out["total_energy"] = float(out["total_energy"])
@@ -68,7 +72,11 @@ def service_distance_energy(env: Any, info: Dict[str, Any]) -> Tuple[float, floa
     return float(distance), float(energy)
 
 
-def transition_metrics(env: Any, info: Dict[str, Any]) -> JointBeamMetrics:
+def average_lateness(metrics: JointBeamMetrics) -> float:
+    return float(metrics.total_lateness) / max(1, int(metrics.late_orders))
+
+
+def transition_metrics(env: Any, info: Dict[str, Any], *, severe_lateness_threshold: float = 30.0) -> JointBeamMetrics:
     out = JointBeamMetrics()
     if info.get("decision") == "accept":
         out.accepted_orders += 1
@@ -92,6 +100,7 @@ def transition_metrics(env: Any, info: Dict[str, Any]) -> JointBeamMetrics:
         late_values.append(max(0.0, _num(value)))
     out.on_time_orders += sum(1 for value in late_values if value <= 1e-9)
     out.late_orders += sum(1 for value in late_values if value > 1e-9)
+    out.severe_late_count += sum(1 for value in late_values if value > float(severe_lateness_threshold) + 1e-9)
     out.total_lateness += float(sum(late_values))
     out.max_lateness = max([0.0] + late_values)
     distance, energy = service_distance_energy(env, info)
@@ -105,6 +114,7 @@ def add_metrics(a: JointBeamMetrics, b: JointBeamMetrics) -> JointBeamMetrics:
         accepted_orders=int(a.accepted_orders) + int(b.accepted_orders),
         on_time_orders=int(a.on_time_orders) + int(b.on_time_orders),
         late_orders=int(a.late_orders) + int(b.late_orders),
+        severe_late_count=int(a.severe_late_count) + int(b.severe_late_count),
         total_lateness=float(a.total_lateness) + float(b.total_lateness),
         max_lateness=max(float(a.max_lateness), float(b.max_lateness)),
         total_energy=float(a.total_energy) + float(b.total_energy),
@@ -113,10 +123,10 @@ def add_metrics(a: JointBeamMetrics, b: JointBeamMetrics) -> JointBeamMetrics:
     )
 
 
-def merge_transition_metrics(env: Any, infos: Iterable[Dict[str, Any]]) -> JointBeamMetrics:
+def merge_transition_metrics(env: Any, infos: Iterable[Dict[str, Any]], *, severe_lateness_threshold: float = 30.0) -> JointBeamMetrics:
     merged = JointBeamMetrics()
     for info in infos:
-        merged = add_metrics(merged, transition_metrics(env, info))
+        merged = add_metrics(merged, transition_metrics(env, info, severe_lateness_threshold=severe_lateness_threshold))
     return merged
 
 
@@ -125,6 +135,7 @@ def score_metrics(metrics: JointBeamMetrics, cfg: JointBeamObjectiveConfig) -> f
     score -= float(cfg.accept_weight) * float(metrics.accepted_orders)
     score -= float(cfg.on_time_weight) * float(metrics.on_time_orders)
     score += float(cfg.late_weight) * float(metrics.late_orders)
+    score += float(cfg.severe_late_weight) * float(metrics.severe_late_count)
     score += float(cfg.lateness_weight) * float(metrics.total_lateness)
     score += float(cfg.max_lateness_weight) * float(metrics.max_lateness)
     score += float(cfg.energy_weight) * float(metrics.total_energy)
@@ -205,8 +216,10 @@ def dominance_prune(states: List[Any]) -> List[Any]:
                 a.accepted_orders <= b.accepted_orders
                 and a.on_time_orders <= b.on_time_orders
                 and a.late_orders >= b.late_orders
+                and average_lateness(a) >= average_lateness(b)
                 and a.max_lateness >= b.max_lateness
                 and a.total_lateness >= b.total_lateness
+                and a.severe_late_count >= b.severe_late_count
                 and a.total_distance >= b.total_distance
                 and a.total_energy >= b.total_energy
                 and a.hard_constraint_violations >= b.hard_constraint_violations
@@ -215,8 +228,10 @@ def dominance_prune(states: List[Any]) -> List[Any]:
                 a.accepted_orders < b.accepted_orders
                 or a.on_time_orders < b.on_time_orders
                 or a.late_orders > b.late_orders
+                or average_lateness(a) > average_lateness(b)
                 or a.max_lateness > b.max_lateness
                 or a.total_lateness > b.total_lateness
+                or a.severe_late_count > b.severe_late_count
                 or a.total_distance > b.total_distance
                 or a.total_energy > b.total_energy
                 or a.hard_constraint_violations > b.hard_constraint_violations
