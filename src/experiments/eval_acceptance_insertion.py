@@ -57,6 +57,7 @@ INSERTION_METHODS = [
     "joint_accept_route_beam",
     "joint_accept_route_beam_guarded",
     "tail_risk_constrained_joint_beam",
+    "tail_risk_constrained_joint_beam_safe_deviation",
 ]
 ALL_METHODS = ["raw_baseline", "v2_repair_only"] + INSERTION_METHODS
 
@@ -78,6 +79,19 @@ SUMMARY_FIELDS = [
     "total_flight_distance",
     "total_distance_delta_vs_raw_baseline",
     "hard_constraint_violations",
+    "total_instances",
+    "baseline_fallback_instances",
+    "safe_deviation_instances",
+    "safe_deviation_rate",
+    "improved_acceptance_instances",
+    "improved_on_time_instances",
+    "improved_late_orders_instances",
+    "improved_avg_lateness_instances",
+    "improved_max_lateness_instances",
+    "improved_energy_instances",
+    "improved_distance_instances",
+    "rejected_deviation_reasons",
+    "has_nontrivial_improvement",
     "is_small_data_pass",
     "recommendation",
 ]
@@ -315,6 +329,91 @@ def _tail_risk_budget_from_raw(
     )
 
 
+def _empty_safe_deviation_stats() -> Dict[str, Any]:
+    return {
+        "total_instances": 0,
+        "baseline_fallback_instances": 0,
+        "safe_deviation_instances": 0,
+        "safe_deviation_rate": 0.0,
+        "improved_acceptance_instances": 0,
+        "improved_on_time_instances": 0,
+        "improved_late_orders_instances": 0,
+        "improved_avg_lateness_instances": 0,
+        "improved_max_lateness_instances": 0,
+        "improved_energy_instances": 0,
+        "improved_distance_instances": 0,
+        "rejected_deviation_reasons": {},
+    }
+
+
+def _bump_reason(stats: Dict[str, Any], reason: str) -> None:
+    reasons = stats.setdefault("rejected_deviation_reasons", {})
+    reasons[str(reason)] = int(reasons.get(str(reason), 0)) + 1
+
+
+def _safe_deviation_decision(
+    args: argparse.Namespace,
+    raw_summary: Dict[str, Any],
+    candidate_summary: Dict[str, Any],
+) -> Tuple[bool, Dict[str, Any]]:
+    eps = float(args.tail_risk_min_improvement)
+    reasons: List[str] = []
+    raw_acc = _num(raw_summary.get("acceptance_rate"))
+    cand_acc = _num(candidate_summary.get("acceptance_rate"))
+    raw_on_time = _num(raw_summary.get("on_time_rate"))
+    cand_on_time = _num(candidate_summary.get("on_time_rate"))
+    raw_late = int(_num(raw_summary.get("late_orders")))
+    cand_late = int(_num(candidate_summary.get("late_orders")))
+    raw_avg = _num(raw_summary.get("average_lateness"))
+    cand_avg = _num(candidate_summary.get("average_lateness"))
+    raw_max = _num(raw_summary.get("max_lateness"))
+    cand_max = _num(candidate_summary.get("max_lateness"))
+    raw_energy = _num(raw_summary.get("total_energy_consumption"))
+    cand_energy = _num(candidate_summary.get("total_energy_consumption"))
+    raw_distance = _num(raw_summary.get("total_flight_distance"))
+    cand_distance = _num(candidate_summary.get("total_flight_distance"))
+    hard = int(_num(candidate_summary.get("hard_constraint_violations")))
+
+    if hard != 0:
+        reasons.append("hard_constraint_violations")
+    if cand_acc + 1e-9 < raw_acc - float(args.tail_risk_max_acceptance_drop):
+        reasons.append("acceptance_rate_drop")
+    if cand_on_time + 1e-9 < raw_on_time - float(args.tail_risk_max_on_time_drop):
+        reasons.append("on_time_rate_drop")
+    if cand_late > raw_late:
+        reasons.append("late_orders_increase")
+    if cand_avg > raw_avg * float(args.tail_risk_max_avg_late_ratio) + 1e-9:
+        reasons.append("average_lateness_regression")
+    if cand_max > raw_max * float(args.tail_risk_max_max_late_ratio) + 1e-9:
+        reasons.append("max_lateness_regression")
+    if cand_energy > raw_energy * float(args.tail_risk_max_energy_ratio) + 1e-9:
+        reasons.append("energy_regression")
+    if cand_distance > raw_distance * float(args.tail_risk_max_distance_ratio) + 1e-9:
+        reasons.append("distance_regression")
+
+    improvements = {
+        "acceptance": cand_acc > raw_acc + eps,
+        "on_time": cand_on_time > raw_on_time + eps,
+        "late_orders": cand_late < raw_late,
+        "avg_lateness": cand_avg + eps < raw_avg,
+        "max_lateness": cand_max + eps < raw_max,
+        "energy": cand_energy + eps < raw_energy,
+        "distance": cand_distance + eps < raw_distance,
+    }
+    has_improvement = any(bool(v) for v in improvements.values())
+    if bool(args.tail_risk_require_nontrivial_improvement) and not has_improvement:
+        reasons.append("no_nontrivial_improvement")
+
+    accepted = not reasons
+    return accepted, {
+        "accepted": bool(accepted),
+        "reasons": reasons,
+        "improvements": improvements,
+        "raw_summary": raw_summary,
+        "candidate_summary": candidate_summary,
+    }
+
+
 def _raw_baseline_budget_for_instance(
     args: argparse.Namespace,
     policy: Any,
@@ -538,7 +637,8 @@ def evaluate_method(args: argparse.Namespace, method: str, policy: Any, out_dir:
     episode_summaries: List[Dict[str, Any]] = []
     order_rows: List[Dict[str, Any]] = []
     drone_rows: List[Dict[str, Any]] = []
-    debug: Dict[str, Any] = {"method_name": method, "instances": []}
+    safe_stats = _empty_safe_deviation_stats()
+    debug: Dict[str, Any] = {"method_name": method, "instances": [], "safe_deviation_stats": safe_stats}
     for idx in range(1, int(args.eval_instances) + 1):
         seed = int(args.eval_seed) * 100000 + idx
         np.random.seed(seed + sum(ord(c) for c in method))
@@ -576,7 +676,7 @@ def evaluate_method(args: argparse.Namespace, method: str, policy: Any, out_dir:
                 _joint_beam_cfg(args, guarded=True),
                 max_steps=max_steps,
             )
-        elif method == "tail_risk_constrained_joint_beam":
+        elif method in {"tail_risk_constrained_joint_beam", "tail_risk_constrained_joint_beam_safe_deviation"}:
             budget, raw_budget_debug, raw_anchor_actions, raw_anchor_traj = _raw_baseline_budget_for_instance(
                 args,
                 policy,
@@ -585,14 +685,17 @@ def evaluate_method(args: argparse.Namespace, method: str, policy: Any, out_dir:
                 instance_id=idx,
                 max_steps=max_steps,
             )
-            if not bool(args.tail_risk_allow_anchor_deviation):
+            safe_deviation_mode = bool(args.tail_risk_allow_safe_deviation) or method == "tail_risk_constrained_joint_beam_safe_deviation"
+            safe_stats["total_instances"] = int(safe_stats.get("total_instances", 0)) + 1
+            if not safe_deviation_mode and not bool(args.tail_risk_allow_anchor_deviation):
                 cost = float(raw_budget_debug["raw_cost"])
                 traj = raw_anchor_traj
+                safe_stats["baseline_fallback_instances"] = int(safe_stats.get("baseline_fallback_instances", 0)) + 1
                 method_debug = {
                     "done": True,
                     "anchor_locked": True,
                     "anchor_policy": "raw_baseline_best_rollout",
-                    "reason": "baseline anchor is used unless a no-regret deviation is explicitly enabled",
+                    "reason": "baseline anchor is used unless safe deviation is explicitly enabled",
                     "budget": budget.to_dict(),
                     "anchor_action_count": len(raw_anchor_actions),
                 }
@@ -600,7 +703,7 @@ def evaluate_method(args: argparse.Namespace, method: str, policy: Any, out_dir:
                 anchor_seed = int(raw_budget_debug["raw_seed"])
                 np.random.seed(anchor_seed)
                 torch.manual_seed(anchor_seed)
-                cost, traj, method_debug = rollout_tail_risk_constrained_joint_beam(
+                candidate_cost, candidate_traj, candidate_debug = rollout_tail_risk_constrained_joint_beam(
                     env,
                     _joint_beam_cfg(args, guarded=True),
                     budget,
@@ -608,6 +711,67 @@ def evaluate_method(args: argparse.Namespace, method: str, policy: Any, out_dir:
                     anchor_actions=raw_anchor_actions,
                     allow_anchor_deviation=True,
                 )
+                candidate_summary, candidate_orders, candidate_drone = analyze_episode(
+                    env,
+                    candidate_traj,
+                    model_name=f"{method}_candidate",
+                    instance_id=idx,
+                    objective_cost=candidate_cost,
+                )
+                candidate_hard, candidate_soft = _hard_soft(candidate_orders, [candidate_drone])
+                candidate_summary["hard_constraint_violations"] = int(candidate_hard)
+                candidate_summary["soft_time_window_violations"] = int(candidate_soft)
+                if safe_deviation_mode:
+                    accepted_deviation, deviation_decision = _safe_deviation_decision(
+                        args,
+                        raw_budget_debug["raw_summary"],
+                        candidate_summary,
+                    )
+                    if accepted_deviation:
+                        cost = candidate_cost
+                        traj = candidate_traj
+                        safe_stats["safe_deviation_instances"] = int(safe_stats.get("safe_deviation_instances", 0)) + 1
+                        for name, improved in deviation_decision["improvements"].items():
+                            if improved:
+                                key = {
+                                    "acceptance": "improved_acceptance_instances",
+                                    "on_time": "improved_on_time_instances",
+                                    "late_orders": "improved_late_orders_instances",
+                                    "avg_lateness": "improved_avg_lateness_instances",
+                                    "max_lateness": "improved_max_lateness_instances",
+                                    "energy": "improved_energy_instances",
+                                    "distance": "improved_distance_instances",
+                                }[name]
+                                safe_stats[key] = int(safe_stats.get(key, 0)) + 1
+                        method_debug = {
+                            **candidate_debug,
+                            "safe_deviation_mode": True,
+                            "safe_deviation_selected": True,
+                            "safe_deviation_decision": deviation_decision,
+                        }
+                    else:
+                        cost = float(raw_budget_debug["raw_cost"])
+                        traj = raw_anchor_traj
+                        safe_stats["baseline_fallback_instances"] = int(safe_stats.get("baseline_fallback_instances", 0)) + 1
+                        for reason in deviation_decision["reasons"]:
+                            _bump_reason(safe_stats, reason)
+                        method_debug = {
+                            **candidate_debug,
+                            "safe_deviation_mode": True,
+                            "safe_deviation_selected": False,
+                            "anchor_locked": True,
+                            "fallback_policy": "raw_baseline_best_rollout",
+                            "safe_deviation_decision": deviation_decision,
+                        }
+                else:
+                    cost = candidate_cost
+                    traj = candidate_traj
+                    method_debug = {
+                        **candidate_debug,
+                        "safe_deviation_mode": False,
+                        "legacy_anchor_deviation": True,
+                        "candidate_summary": candidate_summary,
+                    }
             method_debug["raw_budget_reference"] = raw_budget_debug
         else:
             cost, traj, method_debug = rollout_acceptance_insertion(env, _insertion_cfg(method), max_steps=max_steps)
@@ -622,12 +786,18 @@ def evaluate_method(args: argparse.Namespace, method: str, policy: Any, out_dir:
     hard, soft = _hard_soft(order_rows, [drone_detail])
     overall["hard_constraint_violations"] = int(hard)
     overall["soft_time_window_violations"] = int(soft)
+    if int(safe_stats.get("total_instances", 0)) > 0:
+        safe_stats["safe_deviation_rate"] = float(safe_stats.get("safe_deviation_instances", 0)) / max(1, int(safe_stats.get("total_instances", 0)))
+    debug["safe_deviation_stats"] = safe_stats
+    overall.update(safe_stats)
     method_dir = out_dir / method
     method_dir.mkdir(parents=True, exist_ok=True)
     write_csv(str(method_dir / "overall_summary.csv"), [overall], OVERALL_FIELDS + ["hard_constraint_violations", "soft_time_window_violations"])
     write_csv(str(method_dir / "order_details.csv"), order_rows, ORDER_DETAIL_FIELDS)
     write_csv(str(method_dir / "drone_details.csv"), [drone_detail], DRONE_DETAIL_FIELDS)
     write_json(str(method_dir / "debug_log.json"), debug)
+    if int(safe_stats.get("total_instances", 0)) > 0:
+        write_json(str(method_dir / "safe_deviation_stats.json"), safe_stats)
     reasons: Dict[str, int] = {}
     for row in order_rows:
         reason = str(row.get("rejection_reason", "") or "")
@@ -643,7 +813,20 @@ def evaluate_method(args: argparse.Namespace, method: str, policy: Any, out_dir:
 
 def _summary_row(method: str, size: int, overall: Dict[str, Any], raw: Dict[str, Any]) -> Dict[str, Any]:
     hard = int(_num(overall.get("hard_constraint_violations")))
-    passed = (
+    safe_deviation_instances = int(_num(overall.get("safe_deviation_instances")))
+    has_nontrivial_improvement = any(
+        int(_num(overall.get(key))) > 0
+        for key in (
+            "improved_acceptance_instances",
+            "improved_on_time_instances",
+            "improved_late_orders_instances",
+            "improved_avg_lateness_instances",
+            "improved_max_lateness_instances",
+            "improved_energy_instances",
+            "improved_distance_instances",
+        )
+    )
+    safety_passed = (
         _num(overall.get("acceptance_rate")) + 1e-9 >= _num(raw.get("acceptance_rate"))
         and _num(overall.get("on_time_rate")) + 1e-9 >= _num(raw.get("on_time_rate"))
         and int(_num(overall.get("late_orders"))) <= int(_num(raw.get("late_orders")))
@@ -653,6 +836,8 @@ def _summary_row(method: str, size: int, overall: Dict[str, Any], raw: Dict[str,
         and _num(overall.get("total_flight_distance")) <= 1.03 * _num(raw.get("total_flight_distance")) + 1e-9
         and hard == 0
     )
+    requires_teacher_value = str(method) == "tail_risk_constrained_joint_beam_safe_deviation"
+    passed = bool(safety_passed and (not requires_teacher_value or (safe_deviation_instances > 0 and has_nontrivial_improvement)))
     return {
         "method_name": method,
         "eval_instances": int(size),
@@ -671,6 +856,19 @@ def _summary_row(method: str, size: int, overall: Dict[str, Any], raw: Dict[str,
         "total_flight_distance": _num(overall.get("total_flight_distance")),
         "total_distance_delta_vs_raw_baseline": _num(overall.get("total_flight_distance")) - _num(raw.get("total_flight_distance")),
         "hard_constraint_violations": hard,
+        "total_instances": int(_num(overall.get("total_instances"))),
+        "baseline_fallback_instances": int(_num(overall.get("baseline_fallback_instances"))),
+        "safe_deviation_instances": safe_deviation_instances,
+        "safe_deviation_rate": _num(overall.get("safe_deviation_rate")),
+        "improved_acceptance_instances": int(_num(overall.get("improved_acceptance_instances"))),
+        "improved_on_time_instances": int(_num(overall.get("improved_on_time_instances"))),
+        "improved_late_orders_instances": int(_num(overall.get("improved_late_orders_instances"))),
+        "improved_avg_lateness_instances": int(_num(overall.get("improved_avg_lateness_instances"))),
+        "improved_max_lateness_instances": int(_num(overall.get("improved_max_lateness_instances"))),
+        "improved_energy_instances": int(_num(overall.get("improved_energy_instances"))),
+        "improved_distance_instances": int(_num(overall.get("improved_distance_instances"))),
+        "rejected_deviation_reasons": overall.get("rejected_deviation_reasons", {}),
+        "has_nontrivial_improvement": bool(has_nontrivial_improvement),
         "is_small_data_pass": bool(passed),
         "recommendation": "small_gate_pass" if passed else "do_not_train_yet",
     }
@@ -795,6 +993,16 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--enable-baseline-anchored-budget", type=_bool, default=True)
     p.add_argument("--disable-baseline-anchored-budget", dest="enable_baseline_anchored_budget", action="store_false")
     p.add_argument("--tail-risk-allow-anchor-deviation", action="store_true")
+    p.add_argument("--tail-risk-allow-safe-deviation", action="store_true")
+    p.add_argument("--tail-risk-min-improvement", type=float, default=1e-6)
+    p.add_argument("--tail-risk-max-acceptance-drop", type=float, default=0.0)
+    p.add_argument("--tail-risk-max-on-time-drop", type=float, default=0.0)
+    p.add_argument("--tail-risk-max-avg-late-ratio", type=float, default=1.00)
+    p.add_argument("--tail-risk-max-max-late-ratio", type=float, default=1.00)
+    p.add_argument("--tail-risk-max-energy-ratio", type=float, default=1.01)
+    p.add_argument("--tail-risk-max-distance-ratio", type=float, default=1.01)
+    p.add_argument("--tail-risk-require-nontrivial-improvement", type=_bool, default=True)
+    p.add_argument("--tail-risk-disable-nontrivial-improvement", dest="tail_risk_require_nontrivial_improvement", action="store_false")
     args = p.parse_args()
     args.model_path = args.baseline_model_path
     return args
