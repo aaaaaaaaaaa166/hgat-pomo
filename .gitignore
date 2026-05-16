@@ -19,6 +19,14 @@ experiments/*/models/*.pt
 experiments/*/logs/*.log
 experiments/*smoke*/
 experiments/*/metrics/*trajs*.txt
+experiments/**/evaluation/
+experiments/**/debug/
+experiments/**/models/
+experiments/**/figures/
+experiments/**/imitation/*.pt
+experiments/**/*checkpoint*/
+experiments/**/*stdout*.log
+experiments/**/*stderr*.log
 datasets/vrpinstances-1.0.3.tgz
 external_methods/repos/
 external_methods/scripts/__pycache__/
