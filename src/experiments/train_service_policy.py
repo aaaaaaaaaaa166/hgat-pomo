@@ -70,6 +70,17 @@ def _route_pairwise_loss(
     return losses.mean()
 
 
+def _assignment_class(sample: Dict[str, Any], out: Dict[str, torch.Tensor]) -> Optional[int]:
+    label = int(sample.get("assignment_label", -100))
+    if label == -100:
+        return None
+    cls = 0 if label < 0 else label + 1
+    num_classes = int(out["no_drone_logit"].numel() + out["drone_assignment_logits"].numel())
+    if cls < 0 or cls >= num_classes:
+        return None
+    return int(cls)
+
+
 def train(args: argparse.Namespace) -> Dict[str, Any]:
     samples = _load_dataset(args.dataset_path)
     if not samples:
@@ -104,6 +115,7 @@ def train(args: argparse.Namespace) -> Dict[str, Any]:
         total_route = 0.0
         total_late = 0.0
         total_score = 0.0
+        total_assignment = 0.0
         total_on_time = 0.0
         total_risky_accept = 0.0
         total_pairwise = 0.0
@@ -123,6 +135,12 @@ def train(args: argparse.Namespace) -> Dict[str, Any]:
                 route_loss = F.cross_entropy(out["route_priority_logits"].view(1, -1), torch.tensor([best_next], device=device))
                 losses.append(float(args.route_loss_weight) * route_loss)
                 total_route += float(route_loss.detach().cpu())
+                assignment_cls = _assignment_class(sample, out)
+                if assignment_cls is not None and float(args.assignment_loss_weight) > 0.0:
+                    assignment_logits = torch.cat([out["no_drone_logit"], out["drone_assignment_logits"]], dim=0).view(1, -1)
+                    assignment_loss = F.cross_entropy(assignment_logits, torch.tensor([assignment_cls], device=device))
+                    losses.append(float(args.assignment_loss_weight) * assignment_loss)
+                    total_assignment += float(assignment_loss.detach().cpu())
                 if float(args.pairwise_route_loss_weight) > 0.0:
                     pair_loss = _route_pairwise_loss(
                         out["route_priority_logits"],
@@ -181,6 +199,7 @@ def train(args: argparse.Namespace) -> Dict[str, Any]:
             "route_loss": total_route / denom,
             "lateness_loss": total_late / denom,
             "score_loss": total_score / denom,
+            "assignment_loss": total_assignment / denom,
             "on_time_loss": total_on_time / denom,
             "risky_accept_loss": total_risky_accept / denom,
             "pairwise_route_loss": total_pairwise / denom,
@@ -216,6 +235,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--route-loss-weight", type=float, default=1.0)
     p.add_argument("--lateness-loss-weight", type=float, default=0.2)
     p.add_argument("--score-loss-weight", type=float, default=0.05)
+    p.add_argument("--assignment-loss-weight", type=float, default=0.0)
     p.add_argument("--on-time-loss-weight", type=float, default=0.0)
     p.add_argument("--on-time-lateness-threshold", type=float, default=1e-6)
     p.add_argument("--risky-accept-penalty", type=float, default=0.0)

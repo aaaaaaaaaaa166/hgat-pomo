@@ -24,6 +24,11 @@ FIELDS = [
     "route_samples",
     "route_top1_accuracy",
     "route_top3_accuracy",
+    "assignment_samples",
+    "assignment_accuracy",
+    "assignment_drone_positive_rate",
+    "model_drone_assignment_rate",
+    "assignment_drone_recall",
     "lateness_samples",
     "lateness_mae",
     "lateness_rmse",
@@ -126,6 +131,11 @@ def evaluate_heads(
     route_total = 0
     route_top1 = 0
     route_top3 = 0
+    assignment_total = 0
+    assignment_correct = 0
+    assignment_drone_positive = 0
+    model_drone_assignment = 0
+    assignment_drone_tp = 0
     lateness_total = 0
     abs_err = 0.0
     sq_err = 0.0
@@ -175,6 +185,17 @@ def evaluate_heads(
                 route_top3 += int(best_next in topk)
                 teacher_match += int(topk[0] == best_next)
                 teacher_match_total += 1
+                assignment_label = int(sample.get("assignment_label", -100))
+                if assignment_label != -100:
+                    assignment_cls = 0 if assignment_label < 0 else assignment_label + 1
+                    assignment_logits = torch.cat([out["no_drone_logit"], out["drone_assignment_logits"]], dim=0)
+                    if 0 <= assignment_cls < int(assignment_logits.numel()):
+                        pred_assignment = int(torch.argmax(assignment_logits).item())
+                        assignment_total += 1
+                        assignment_correct += int(pred_assignment == assignment_cls)
+                        assignment_drone_positive += int(assignment_cls > 0)
+                        model_drone_assignment += int(pred_assignment > 0)
+                        assignment_drone_tp += int(pred_assignment > 0 and assignment_cls > 0)
 
             if target_node > 0 and target_node < int(out["lateness_risk"].numel()):
                 pred_late = float(torch.clamp(out["lateness_risk"][target_node], min=0.0).detach().cpu())
@@ -205,6 +226,11 @@ def evaluate_heads(
         "route_samples": int(route_total),
         "route_top1_accuracy": _safe_div(route_top1, route_total),
         "route_top3_accuracy": _safe_div(route_top3, route_total),
+        "assignment_samples": int(assignment_total),
+        "assignment_accuracy": _safe_div(assignment_correct, assignment_total),
+        "assignment_drone_positive_rate": _safe_div(assignment_drone_positive, assignment_total),
+        "model_drone_assignment_rate": _safe_div(model_drone_assignment, assignment_total),
+        "assignment_drone_recall": _safe_div(assignment_drone_tp, assignment_drone_positive),
         "lateness_samples": int(lateness_total),
         "lateness_mae": _safe_div(abs_err, lateness_total),
         "lateness_rmse": math.sqrt(_safe_div(sq_err, lateness_total)),
@@ -252,8 +278,8 @@ def write_reports(report_path: Path, head_report_path: Path, rows: Sequence[Dict
         f"- dataset: `{args.dataset_path}`",
         f"- lateness_threshold: `{args.lateness_threshold}`",
         "",
-        "| model | accept_acc | accept_prec | accept_rec | model_accept_rate | route_top1 | route_top3 | late_mae | late_rmse | late_auc | on_time_cls_acc | risky_false_accept | teacher_match |",
-        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+        "| model | accept_acc | accept_prec | accept_rec | model_accept_rate | route_top1 | route_top3 | assign_acc | model_drone_rate | late_mae | late_rmse | late_auc | on_time_cls_acc | risky_false_accept | teacher_match |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for row in rows:
         auc = row["lateness_risk_auc"] if row["lateness_risk_auc"] != "" else "n/a"
@@ -261,6 +287,7 @@ def write_reports(report_path: Path, head_report_path: Path, rows: Sequence[Dict
             f"| {row['model_name']} | {float(row['accept_accuracy']):.6f} | {float(row['accept_precision']):.6f} | "
             f"{float(row['accept_recall']):.6f} | {float(row['model_accept_rate']):.6f} | "
             f"{float(row['route_top1_accuracy']):.6f} | {float(row['route_top3_accuracy']):.6f} | "
+            f"{float(row['assignment_accuracy']):.6f} | {float(row['model_drone_assignment_rate']):.6f} | "
             f"{float(row['lateness_mae']):.6f} | {float(row['lateness_rmse']):.6f} | {auc} | "
             f"{float(row['on_time_class_accuracy']):.6f} | {float(row['risky_order_false_accept_rate']):.6f} | "
             f"{float(row['teacher_policy_match_rate']):.6f} |"
@@ -291,6 +318,7 @@ def write_reports(report_path: Path, head_report_path: Path, rows: Sequence[Dict
             [
                 f"- Accept head is strong/overactive when model_accept_rate is high. Current first model rate: `{float(best['model_accept_rate']):.6f}` against teacher positive rate `{float(best['accept_positive_rate']):.6f}`.",
                 f"- Route top-1 accuracy is `{float(best['route_top1_accuracy']):.6f}` and top-3 accuracy is `{float(best['route_top3_accuracy']):.6f}`; poor top-1 indicates the model is not reproducing teacher service order.",
+                f"- Assignment accuracy is `{float(best['assignment_accuracy']):.6f}` with model drone assignment rate `{float(best['model_drone_assignment_rate']):.6f}` against teacher drone-positive rate `{float(best['assignment_drone_positive_rate']):.6f}`.",
                 f"- Lateness risk MAE/RMSE are `{float(best['lateness_mae']):.6f}` / `{float(best['lateness_rmse']):.6f}`; high error means the risk head is not calibrated enough for decoding.",
                 f"- On-time class accuracy is `{float(best['on_time_class_accuracy']):.6f}` and risk AUC is `{best_auc}`.",
                 f"- Predicted-late-but-accepted count is `{int(best['predicted_late_but_accepted_count'])}` and accepted-late count is `{int(best['accepted_late_count'])}`.",
