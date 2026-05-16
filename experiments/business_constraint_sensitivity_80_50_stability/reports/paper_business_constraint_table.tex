@@ -1,0 +1,53 @@
+\begin{table}[htbp]
+\centering
+\small
+\setlength{\tabcolsep}{3pt}
+\caption{Stability validation of business-constraint configurations for the 80/50 target.}
+\label{tab:business_constraint_stability}
+\begin{tabular}{llrrlrrrrrrrrrl}
+\toprule
+Configuration & Resp. & Due Ext. & Res. & Method & Eval & Acc. & On-time & Late & Avg. Late & Max Late & Energy & Distance & Hard & 80/50 \\
+\midrule
+combined\_D & 5.0 & 3 & 2 & raw\_baseline & 50 & 0.593 & 0.545 & 405 & 8.62 & 25.73 & 234.70 & 3815.02 & 0 & False \\
+combined\_D & 5.0 & 3 & 2 & v2\_repair\_only & 50 & 0.581 & 0.578 & 368 & 8.87 & 27.03 & 233.75 & 3799.23 & 0 & False \\
+combined\_D & 5.0 & 3 & 2 & tail\_risk\_constrained\_joint\_beam & 50 & 0.593 & 0.545 & 405 & 8.62 & 25.73 & 234.70 & 3815.02 & 0 & False \\
+combined\_D & 5.0 & 3 & 2 & oracle\_best\_acceptance & 50 & 0.955 & 0.480 & 744 & 21.41 & 63.52 & 374.65 & 6211.43 & 0 & False \\
+combined\_D & 5.0 & 3 & 2 & oracle\_best\_on\_time & 50 & 0.915 & 0.519 & 660 & 24.15 & 66.11 & 396.89 & 6401.77 & 0 & True \\
+combined\_E & 5.0 & 4 & 3 & raw\_baseline & 50 & 0.582 & 0.691 & 270 & 6.49 & 24.10 & 241.60 & 4151.96 & 0 & False \\
+combined\_E & 5.0 & 4 & 3 & v2\_repair\_only & 50 & 0.591 & 0.700 & 266 & 6.89 & 28.05 & 247.94 & 4291.24 & 0 & False \\
+combined\_E & 5.0 & 4 & 3 & tail\_risk\_constrained\_joint\_beam & 50 & 0.582 & 0.691 & 270 & 6.49 & 24.10 & 241.60 & 4151.96 & 0 & False \\
+combined\_E & 5.0 & 4 & 3 & oracle\_best\_acceptance & 50 & 0.913 & 0.589 & 563 & 14.92 & 48.79 & 394.37 & 6931.75 & 0 & True \\
+combined\_E & 5.0 & 4 & 3 & oracle\_best\_on\_time & 50 & 0.887 & 0.633 & 488 & 16.03 & 53.21 & 412.53 & 7041.88 & 0 & True \\
+combined\_F & 8.0 & 5 & 2 & raw\_baseline & 50 & 0.619 & 0.620 & 353 & 8.59 & 28.58 & 237.96 & 3864.92 & 0 & False \\
+combined\_F & 8.0 & 5 & 2 & v2\_repair\_only & 50 & 0.617 & 0.656 & 318 & 8.96 & 38.73 & 243.56 & 3915.07 & 0 & False \\
+combined\_F & 8.0 & 5 & 2 & tail\_risk\_constrained\_joint\_beam & 50 & 0.619 & 0.620 & 353 & 8.59 & 28.58 & 237.96 & 3864.92 & 0 & False \\
+combined\_F & 8.0 & 5 & 2 & oracle\_best\_acceptance & 50 & 0.995 & 0.537 & 691 & 21.39 & 71.11 & 395.98 & 6504.05 & 0 & True \\
+combined\_F & 8.0 & 5 & 2 & oracle\_best\_on\_time & 50 & 0.989 & 0.545 & 675 & 24.70 & 71.81 & 420.28 & 6759.80 & 0 & True \\
+combined\_G & 8.0 & 5 & 3 & raw\_baseline & 50 & 0.611 & 0.713 & 263 & 6.65 & 22.20 & 252.98 & 4343.84 & 0 & False \\
+combined\_G & 8.0 & 5 & 3 & v2\_repair\_only & 50 & 0.611 & 0.726 & 251 & 6.64 & 21.27 & 250.08 & 4317.67 & 0 & False \\
+combined\_G & 8.0 & 5 & 3 & tail\_risk\_constrained\_joint\_beam & 50 & 0.611 & 0.713 & 263 & 6.65 & 22.20 & 252.98 & 4343.84 & 0 & False \\
+combined\_G & 8.0 & 5 & 3 & oracle\_best\_acceptance & 50 & 0.979 & 0.608 & 575 & 15.85 & 52.41 & 431.27 & 7517.84 & 0 & True \\
+combined\_G & 8.0 & 5 & 3 & oracle\_best\_on\_time & 50 & 0.969 & 0.629 & 539 & 17.68 & 52.52 & 456.36 & 7778.12 & 0 & True \\
+combined\_D & 5.0 & 3 & 2 & raw\_baseline & 100 & 0.603 & 0.569 & 780 & 8.94 & 27.03 & 472.66 & 7660.21 & 0 & False \\
+combined\_D & 5.0 & 3 & 2 & v2\_repair\_only & 100 & 0.598 & 0.596 & 725 & 9.23 & 32.25 & 473.94 & 7673.53 & 0 & False \\
+combined\_D & 5.0 & 3 & 2 & tail\_risk\_constrained\_joint\_beam & 100 & 0.603 & 0.569 & 780 & 8.94 & 27.03 & 472.66 & 7660.21 & 0 & False \\
+combined\_D & 5.0 & 3 & 2 & oracle\_best\_acceptance & 100 & 0.937 & 0.487 & 1441 & 21.24 & 67.48 & 734.29 & 12187.25 & 0 & False \\
+combined\_D & 5.0 & 3 & 2 & oracle\_best\_on\_time & 100 & 0.912 & 0.524 & 1301 & 23.62 & 66.22 & 781.49 & 12590.78 & 0 & True \\
+combined\_E & 5.0 & 4 & 3 & raw\_baseline & 100 & 0.588 & 0.692 & 544 & 6.93 & 26.28 & 492.72 & 8474.79 & 0 & False \\
+combined\_E & 5.0 & 4 & 3 & v2\_repair\_only & 100 & 0.593 & 0.703 & 528 & 7.16 & 28.05 & 496.63 & 8631.02 & 0 & False \\
+combined\_E & 5.0 & 4 & 3 & tail\_risk\_constrained\_joint\_beam & 100 & 0.588 & 0.692 & 544 & 6.93 & 26.28 & 492.72 & 8474.79 & 0 & False \\
+combined\_E & 5.0 & 4 & 3 & oracle\_best\_acceptance & 100 & 0.910 & 0.595 & 1104 & 14.98 & 50.83 & 779.69 & 13659.82 & 0 & True \\
+combined\_E & 5.0 & 4 & 3 & oracle\_best\_on\_time & 100 & 0.874 & 0.641 & 941 & 16.16 & 53.21 & 815.42 & 13943.99 & 0 & True \\
+combined\_F & 8.0 & 5 & 2 & raw\_baseline & 100 & 0.630 & 0.631 & 697 & 8.71 & 28.58 & 484.55 & 7794.85 & 0 & False \\
+combined\_F & 8.0 & 5 & 2 & v2\_repair\_only & 100 & 0.627 & 0.662 & 635 & 9.33 & 38.73 & 492.96 & 7942.72 & 0 & False \\
+combined\_F & 8.0 & 5 & 2 & tail\_risk\_constrained\_joint\_beam & 100 & 0.630 & 0.631 & 697 & 8.71 & 28.58 & 484.55 & 7794.85 & 0 & False \\
+combined\_F & 8.0 & 5 & 2 & oracle\_best\_acceptance & 100 & 0.991 & 0.529 & 1400 & 21.55 & 71.93 & 783.32 & 12927.61 & 0 & True \\
+combined\_F & 8.0 & 5 & 2 & oracle\_best\_on\_time & 100 & 0.986 & 0.543 & 1351 & 24.34 & 71.81 & 847.60 & 13575.18 & 0 & True \\
+combined\_G & 8.0 & 5 & 3 & raw\_baseline & 100 & 0.628 & 0.714 & 540 & 6.89 & 23.06 & 514.66 & 8813.64 & 0 & False \\
+combined\_G & 8.0 & 5 & 3 & v2\_repair\_only & 100 & 0.620 & 0.722 & 518 & 6.71 & 29.19 & 505.36 & 8730.46 & 0 & False \\
+combined\_G & 8.0 & 5 & 3 & tail\_risk\_constrained\_joint\_beam & 100 & 0.628 & 0.714 & 540 & 6.89 & 23.06 & 514.66 & 8813.64 & 0 & False \\
+combined\_G & 8.0 & 5 & 3 & oracle\_best\_acceptance & 100 & 0.971 & 0.609 & 1139 & 15.59 & 54.82 & 863.92 & 14943.78 & 0 & True \\
+combined\_G & 8.0 & 5 & 3 & oracle\_best\_on\_time & 100 & 0.966 & 0.632 & 1066 & 17.49 & 52.52 & 905.75 & 15389.94 & 0 & True \\
+\bottomrule
+\end{tabular}
+\end{table}

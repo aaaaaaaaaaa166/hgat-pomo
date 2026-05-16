@@ -46,6 +46,7 @@ METHODS = [
 SUMMARY_FIELDS = [
     "experiment_name",
     "method_name",
+    "eval_instances",
     "response_window",
     "delivery_window_extension",
     "resource_count",
@@ -306,6 +307,7 @@ def _summary_row(
     return {
         "experiment_name": experiment_name,
         "method_name": method_name,
+        "eval_instances": int(args.eval_instances),
         "response_window": args.response_window_label,
         "delivery_window_extension": float(args.delivery_window_extension),
         "resource_count": int(args.resource_count),
@@ -376,12 +378,12 @@ def _write_section_report(path: Path, title: str, rows: Sequence[Dict[str, Any]]
         "",
         f"- Focus: {focus}",
         "",
-        "| experiment | method | response | due_ext | resources | density | acc | on_time | late | avg_late | max_late | energy | distance | hard |",
-        "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+        "| experiment | method | eval | response | due_ext | resources | density | acc | on_time | late | avg_late | max_late | energy | distance | hard |",
+        "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for row in rows:
         lines.append(
-            f"| {row['experiment_name']} | {row['method_name']} | {row['response_window']} | "
+            f"| {row['experiment_name']} | {row['method_name']} | {int(row.get('eval_instances', 0))} | {row['response_window']} | "
             f"{float(row['delivery_window_extension']):.2f} | {int(row['resource_count'])} | "
             f"{float(row['order_density_ratio']):.2f} | {float(row['acceptance_rate']):.6f} | "
             f"{float(row['on_time_rate']):.6f} | {int(row['late_orders'])} | "
@@ -497,6 +499,28 @@ def build_specs() -> List[Dict[str, Any]]:
     return specs
 
 
+def _normalize_spec_name(value: str) -> str:
+    value = str(value).strip()
+    if len(value) == 1 and value.upper() in {"A", "B", "C", "D", "E", "F", "G"}:
+        return f"combined_{value.upper()}"
+    if value.lower().startswith("combined_") and len(value) > len("combined_"):
+        return f"combined_{value.split('_', 1)[1].upper()}"
+    return value
+
+
+def _filter_specs(specs: Sequence[Dict[str, Any]], spec_names: str) -> List[Dict[str, Any]]:
+    requested = [_normalize_spec_name(x) for x in str(spec_names).split(",") if x.strip()]
+    if not requested:
+        return list(specs)
+    requested_set = {x.lower() for x in requested}
+    selected = [s for s in specs if _normalize_spec_name(str(s["experiment_name"])).lower() in requested_set]
+    found = {_normalize_spec_name(str(s["experiment_name"])).lower() for s in selected}
+    missing = [x for x in requested if x.lower() not in found]
+    if missing:
+        raise ValueError(f"Unknown --specs entries: {missing}")
+    return selected
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Business constraint sensitivity analysis for 80/50 target.")
     p.add_argument("--output-dir", type=str, default="experiments/business_constraint_sensitivity_80_50")
@@ -507,6 +531,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--eval-seed", type=int, default=0)
     p.add_argument("--eval-progress-every", type=int, default=5)
     p.add_argument("--methods", type=str, default=",".join(METHODS))
+    p.add_argument(
+        "--specs",
+        type=str,
+        default="",
+        help="Comma-separated experiment names to run, e.g. combined_D,combined_E or D,E.",
+    )
     p.add_argument("--N", type=int, default=30)
     p.add_argument("--K", type=int, default=8)
     p.add_argument("--hidden-dim", type=int, default=128)
@@ -591,7 +621,9 @@ def main() -> None:
     if unknown:
         raise ValueError(f"Unknown methods: {unknown}")
     policy = _load_policy(_set_policy_args(args))
-    specs = build_specs()
+    specs = _filter_specs(build_specs(), args.specs)
+    if not specs:
+        raise ValueError("No experiment specs selected.")
     rows = _run_specs(args, out_dir, policy, specs, methods)
     write_reports(out_dir, rows)
     print(json.dumps({"output_dir": str(out_dir.resolve()), "rows": len(rows)}, indent=2))
