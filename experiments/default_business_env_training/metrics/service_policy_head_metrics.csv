@@ -1,0 +1,5 @@
+model_name,samples,accept_samples,accept_positive_rate,model_accept_rate,accept_accuracy,accept_precision,accept_recall,route_samples,route_top1_accuracy,route_top3_accuracy,lateness_samples,lateness_mae,lateness_rmse,lateness_risk_auc,on_time_class_accuracy,risky_order_false_accept_rate,predicted_late_but_accepted_count,accepted_late_count,teacher_policy_match_rate
+A_current,1733,626,1.0,1.0,1.0,1.0,1.0,1052,0.8155893536121673,0.970532319391635,1678,9.234415416755626,17.233463798757068,,0.5816448152562574,0.0,106,0,0.8843861740166865
+B_route_focused,1733,626,1.0,1.0,1.0,1.0,1.0,1052,0.8013307984790875,0.9752851711026616,1678,0.0,0.0,,1.0,0.0,0,0,0.8754469606674613
+C_lateness_focused,1733,626,1.0,1.0,1.0,1.0,1.0,1052,0.8155893536121673,0.970532319391635,1678,0.0,0.0,,1.0,0.0,0,0,0.8843861740166865
+D_pairwise,1733,626,1.0,1.0,1.0,1.0,1.0,1052,0.8165399239543726,0.9743346007604563,1678,0.0,0.0,,1.0,0.0,0,0,0.8849821215733016

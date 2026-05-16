@@ -3,8 +3,9 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import math
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import torch
 import torch.nn.functional as F
@@ -28,6 +29,45 @@ def _infer_dims(sample: Dict[str, Any]) -> Dict[str, int]:
         "truck_feature_dim": int(data["truck"].x.size(-1)),
         "drone_feature_dim": int(data["drone"].x.size(-1)),
     }
+
+
+def _target_lateness(sample: Dict[str, Any]) -> float:
+    for key in ("actual_lateness_label", "predicted_lateness_label", "lateness_risk_label"):
+        value = sample.get(key, None)
+        if value not in ("", None):
+            try:
+                return max(0.0, float(value))
+            except Exception:
+                pass
+    return 0.0
+
+
+def _route_pairwise_loss(
+    logits: torch.Tensor,
+    sample: Dict[str, Any],
+    best_next: int,
+    *,
+    margin: float,
+    max_negatives: int,
+) -> Optional[torch.Tensor]:
+    extra = sample.get("extra", {}) or {}
+    truck_mask = extra.get("truck_mask")
+    if truck_mask is None:
+        return None
+    mask = truck_mask.to(logits.device).bool() if torch.is_tensor(truck_mask) else torch.as_tensor(truck_mask, device=logits.device).bool()
+    if best_next < 0 or best_next >= int(logits.numel()) or best_next >= int(mask.numel()) or not bool(mask[best_next]):
+        return None
+    neg = torch.where(mask)[0]
+    neg = neg[(neg != int(best_next)) & (neg > 0)]
+    if neg.numel() == 0:
+        return None
+    with torch.no_grad():
+        neg_scores = logits[neg].detach()
+        keep = torch.topk(neg_scores, k=min(int(max_negatives), int(neg.numel()))).indices
+        neg = neg[keep]
+    best_score = logits[int(best_next)]
+    losses = F.relu(float(margin) - best_score + logits[neg])
+    return losses.mean()
 
 
 def train(args: argparse.Namespace) -> Dict[str, Any]:
@@ -64,6 +104,9 @@ def train(args: argparse.Namespace) -> Dict[str, Any]:
         total_route = 0.0
         total_late = 0.0
         total_score = 0.0
+        total_on_time = 0.0
+        total_risky_accept = 0.0
+        total_pairwise = 0.0
         used = 0
         for idx in perm.tolist():
             sample = samples[idx]
@@ -80,9 +123,21 @@ def train(args: argparse.Namespace) -> Dict[str, Any]:
                 route_loss = F.cross_entropy(out["route_priority_logits"].view(1, -1), torch.tensor([best_next], device=device))
                 losses.append(float(args.route_loss_weight) * route_loss)
                 total_route += float(route_loss.detach().cpu())
+                if float(args.pairwise_route_loss_weight) > 0.0:
+                    pair_loss = _route_pairwise_loss(
+                        out["route_priority_logits"],
+                        sample,
+                        best_next,
+                        margin=float(args.pairwise_margin),
+                        max_negatives=int(args.pairwise_max_negatives),
+                    )
+                    if pair_loss is not None:
+                        losses.append(float(args.pairwise_route_loss_weight) * pair_loss)
+                        total_pairwise += float(pair_loss.detach().cpu())
             target_node = current if current > 0 else best_next
             if target_node > 0 and target_node < int(out["lateness_risk"].numel()):
-                late_target = torch.tensor(float(sample.get("predicted_lateness_label", 0.0)), device=device)
+                late_target_f = _target_lateness(sample)
+                late_target = torch.tensor(late_target_f, device=device)
                 late_loss = F.smooth_l1_loss(out["lateness_risk"][target_node], late_target)
                 score_target = torch.tensor(float(sample.get("insertion_score_label", 0.0)), device=device)
                 score_loss = F.smooth_l1_loss(out["insertion_score"][target_node], score_target)
@@ -90,6 +145,22 @@ def train(args: argparse.Namespace) -> Dict[str, Any]:
                 losses.append(float(args.score_loss_weight) * score_loss)
                 total_late += float(late_loss.detach().cpu())
                 total_score += float(score_loss.detach().cpu())
+                if float(args.on_time_loss_weight) > 0.0:
+                    on_time_target = torch.tensor(1.0 if late_target_f <= float(args.on_time_lateness_threshold) else 0.0, device=device)
+                    on_time_loss = F.binary_cross_entropy_with_logits(-out["lateness_risk"][target_node], on_time_target)
+                    losses.append(float(args.on_time_loss_weight) * on_time_loss)
+                    total_on_time += float(on_time_loss.detach().cpu())
+                if (
+                    float(args.risky_accept_penalty) > 0.0
+                    and accept_label != -100
+                    and current > 0
+                    and late_target_f > float(args.risky_lateness_threshold)
+                ):
+                    accept_prob = F.softmax(out["accept_logits"][current], dim=-1)[1]
+                    severity = min(5.0, late_target_f / max(1e-6, float(args.risky_lateness_threshold)))
+                    risky_loss = accept_prob * float(severity)
+                    losses.append(float(args.risky_accept_penalty) * risky_loss)
+                    total_risky_accept += float(risky_loss.detach().cpu())
             if not losses:
                 continue
             loss = sum(losses)
@@ -110,6 +181,9 @@ def train(args: argparse.Namespace) -> Dict[str, Any]:
             "route_loss": total_route / denom,
             "lateness_loss": total_late / denom,
             "score_loss": total_score / denom,
+            "on_time_loss": total_on_time / denom,
+            "risky_accept_loss": total_risky_accept / denom,
+            "pairwise_route_loss": total_pairwise / denom,
         }
         rows.append(row)
         if row["loss"] < best_loss:
@@ -142,6 +216,13 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--route-loss-weight", type=float, default=1.0)
     p.add_argument("--lateness-loss-weight", type=float, default=0.2)
     p.add_argument("--score-loss-weight", type=float, default=0.05)
+    p.add_argument("--on-time-loss-weight", type=float, default=0.0)
+    p.add_argument("--on-time-lateness-threshold", type=float, default=1e-6)
+    p.add_argument("--risky-accept-penalty", type=float, default=0.0)
+    p.add_argument("--risky-lateness-threshold", type=float, default=1.0)
+    p.add_argument("--pairwise-route-loss-weight", type=float, default=0.0)
+    p.add_argument("--pairwise-margin", type=float, default=1.0)
+    p.add_argument("--pairwise-max-negatives", type=int, default=8)
     p.add_argument("--grad-clip", type=float, default=1.0)
     p.add_argument("--device", type=str, default="")
     return p.parse_args()
@@ -155,4 +236,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

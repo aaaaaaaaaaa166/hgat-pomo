@@ -25,6 +25,7 @@ from src.evaluation.time_window_inference import TimeWindowInferenceConfig
 from src.evaluation.v2_repair import V2RepairConfig, repair_trajectory
 from src.evaluation.v2_scheduler import V2SchedulerConfig
 from src.evaluation.v2_sequence_scoring import V2SequenceScoreConfig
+from src.experiments.business_env_profiles import BUSINESS_ENV_PROFILES, get_business_env_profile, profile_names
 from src.experiments.run_target_80_50_feasibility import rollout_beam_oracle, rollout_greedy_heuristic
 from src.experiments.run_time_window_repair_experiments import (
     _env_config,
@@ -33,6 +34,7 @@ from src.experiments.run_time_window_repair_experiments import (
     _make_env,
     rollout_inference,
 )
+from src.models.service_policy import ServicePolicy
 
 
 METHODS = [
@@ -41,6 +43,7 @@ METHODS = [
     "oracle_best_acceptance",
     "oracle_best_on_time",
     "tail_risk_constrained_joint_beam",
+    "service_policy_imitation",
 ]
 
 SUMMARY_FIELDS = [
@@ -98,6 +101,25 @@ def _hard_soft(order_rows: Sequence[Dict[str, Any]], drone_rows: Sequence[Dict[s
 def _set_policy_args(args: argparse.Namespace) -> argparse.Namespace:
     args.model_path = args.baseline_model_path
     return args
+
+
+def _load_service_policy(path: str, device: torch.device) -> ServicePolicy:
+    state = torch.load(path, map_location=device, weights_only=False)
+    dims = state.get("dims", {})
+    cfg = state.get("config", {})
+    model = ServicePolicy(
+        hidden_dim=int(cfg.get("hidden_dim", 128)),
+        heads=int(cfg.get("heads", 4)),
+        dropout=float(cfg.get("dropout", 0.0)),
+        k_nn_orders=int(cfg.get("k_nn_orders", 8)),
+        num_encoder_layers=int(cfg.get("encoder_layers", 2)),
+        order_feature_dim=int(dims.get("order_feature_dim", 22)),
+        truck_feature_dim=int(dims.get("truck_feature_dim", 6)),
+        drone_feature_dim=int(dims.get("drone_feature_dim", 6)),
+    ).to(device)
+    model.load_state_dict(state.get("model_state_dict", state))
+    model.eval()
+    return model
 
 
 def _clone_args(args: argparse.Namespace, **updates: Any) -> argparse.Namespace:
@@ -180,12 +202,146 @@ def _v2_sched_cfg(seed: int) -> V2SchedulerConfig:
     )
 
 
+def _fallback_service_action(env: TruckDroneRendezvousEnv, obs: Dict[str, Any]) -> Tuple[int, int]:
+    current = int(obs.get("current_decision_request", -1))
+    if current > 0:
+        return (env.K_NONE, 0)
+    masks = env.get_masks()
+    feasible_j = np.where(np.asarray(masks.get("truck_mask", []), dtype=np.int8) > 0)[0].astype(int).tolist()
+    if not feasible_j:
+        return (env.K_NONE, 0)
+    feasible_j = sorted(
+        feasible_j,
+        key=lambda j: (
+            0 if int(j) > 0 else 1,
+            float(env.due[int(j)]) if int(j) > 0 and math.isfinite(float(env.due[int(j)])) else 1e9,
+            int(j),
+        ),
+    )
+    return (env.K_NONE, int(feasible_j[0]))
+
+
+def _sanitize_service_action(env: TruckDroneRendezvousEnv, obs: Dict[str, Any], action: Tuple[int, int]) -> Tuple[int, int]:
+    current = int(obs.get("current_decision_request", -1))
+    k, j = int(action[0]), int(action[1])
+    if current > 0:
+        return (env.K_NONE, current if j == current else 0)
+    masks = env.get_masks()
+    truck_mask = np.asarray(masks.get("truck_mask", []), dtype=np.int8)
+    if j < 0 or j >= truck_mask.size or int(truck_mask[j]) <= 0:
+        return _fallback_service_action(env, obs)
+    if k == env.K_NONE or k <= 0:
+        return (env.K_NONE, j)
+    try:
+        drone_mask = np.asarray(env.get_masks(j=j).get("drone_mask", []), dtype=np.int8)
+        if k < drone_mask.size and int(drone_mask[k]) > 0:
+            return (k, j)
+    except Exception:
+        pass
+    return (env.K_NONE, j)
+
+
+def _decode_service_policy_action(
+    args: argparse.Namespace,
+    model: ServicePolicy,
+    env: TruckDroneRendezvousEnv,
+    obs: Dict[str, Any],
+) -> Tuple[Tuple[int, int], Dict[str, Any]]:
+    mode = str(getattr(args, "decode_mode", "service_policy_raw"))
+    if mode == "service_policy_raw":
+        action, debug = model.act(env, obs, greedy=True)
+        raw_action = action
+        action = _sanitize_service_action(env, obs, action)
+        if tuple(action) != tuple(raw_action):
+            debug = {**debug, "sanitized_from": [int(raw_action[0]), int(raw_action[1])]}
+        return action, {**debug, "decode_mode": mode}
+
+    out = model.forward_env(env, obs)
+    current = int(obs.get("current_decision_request", -1))
+    risk = out["lateness_risk"].detach()
+    risk_nonneg = torch.clamp(risk, min=0.0)
+    threshold = float(getattr(args, "lateness_risk_threshold", 1.0))
+    max_pred = float(getattr(args, "max_predicted_lateness", 5.0))
+    risk_penalty = float(getattr(args, "accept_risk_penalty", 2.0))
+    on_time_bonus = float(getattr(args, "on_time_priority_bonus", 1.0))
+    min_conf = float(getattr(args, "min_route_confidence", 0.70))
+    guard_enabled = bool(getattr(args, "lateness_risk_guard", True))
+    if mode == "service_policy_teacher_like":
+        risk_penalty *= 1.5
+        on_time_bonus *= 1.5
+        min_conf = max(min_conf, 0.80)
+
+    if current > 0:
+        logits = out["accept_logits"][current]
+        probs = torch.softmax(logits, dim=-1)
+        accept_prob = float(probs[1].detach().cpu())
+        reject_prob = float(probs[0].detach().cpu())
+        pred_late = float(risk_nonneg[current].detach().cpu())
+        accept_score = accept_prob - reject_prob - risk_penalty * max(0.0, pred_late - threshold)
+        accept = accept_prob >= 0.5 and accept_score >= 0.0
+        if guard_enabled and pred_late > max_pred:
+            accept = False
+        if guard_enabled and pred_late > threshold and accept_prob < min_conf:
+            accept = False
+        action = (env.K_NONE, current if accept else 0)
+        return action, {
+            "decode_mode": mode,
+            "phase": "acceptance",
+            "decision": "accept" if accept else "reject",
+            "accept_prob": accept_prob,
+            "reject_prob": reject_prob,
+            "predicted_lateness": pred_late,
+            "accept_score": float(accept_score),
+        }
+
+    scores = out["route_priority_logits"].detach().clone()
+    if guard_enabled:
+        scores = scores - risk_penalty * torch.clamp(risk_nonneg - threshold, min=0.0)
+        scores = scores + on_time_bonus * (risk_nonneg <= threshold).float()
+        try:
+            active_deadlines = torch.as_tensor(obs.get("active_deadlines", env.due), device=scores.device, dtype=torch.float32)
+            slack = active_deadlines - float(obs.get("t", 0.0))
+            tight_bonus = torch.clamp(1.0 / (1.0 + torch.clamp(slack, min=0.0)), min=0.0, max=1.0)
+            scores = scores + on_time_bonus * tight_bonus * (risk_nonneg <= max_pred).float()
+        except Exception:
+            pass
+    extra = out.get("extra", {}) or {}
+    truck_mask = extra.get("truck_mask")
+    if truck_mask is not None:
+        mask = truck_mask.to(scores.device).bool()
+    else:
+        mask = torch.as_tensor(env.get_masks()["truck_mask"], device=scores.device).bool()
+    scores = scores.masked_fill(~mask, -1e9)
+    if scores.numel() > 0:
+        scores[0] = min(float(scores[0].detach().cpu()), -1e6)
+    j = int(torch.argmax(scores).item()) if scores.numel() else 0
+    if j <= 0:
+        action = _fallback_service_action(env, obs)
+        return action, {"decode_mode": mode, "phase": "route", "fallback": True, "j": int(action[1]), "k": int(action[0])}
+
+    drone_scores = torch.cat([out["no_drone_logit"].detach(), out["drone_assignment_logits"].detach()], dim=0)
+    k_choice = int(torch.argmax(drone_scores).item())
+    k = env.K_NONE if k_choice == 0 else k_choice - 1
+    action = _sanitize_service_action(env, obs, (int(k), int(j)))
+    return action, {
+        "decode_mode": mode,
+        "phase": "route",
+        "j": int(action[1]),
+        "k": int(action[0]),
+        "raw_j": int(j),
+        "raw_k": int(k),
+        "route_score": float(scores[j].detach().cpu()),
+        "predicted_lateness": float(risk_nonneg[j].detach().cpu()),
+    }
+
+
 def _rollout_method(
     args: argparse.Namespace,
     env: TruckDroneRendezvousEnv,
     method_name: str,
     policy: Any,
     seed: int,
+    service_model: Optional[ServicePolicy] = None,
 ) -> Tuple[float, List[Dict[str, Any]], Dict[str, Any]]:
     max_steps = max(32, 8 * (int(env.N) + 1))
     np.random.seed(int(seed))
@@ -208,6 +364,36 @@ def _rollout_method(
         costs, trajs, logs = rollout_inference(policy, env, TimeWindowInferenceConfig(), K=int(args.K), max_steps=max_steps)
         best_id = int(costs.argmin())
         return float(costs[best_id]), trajs[best_id], {"anchor_locked": True, "source": "raw_baseline", "best_k": best_id, "logs": logs[best_id]}
+    if method_name == "service_policy_imitation":
+        if service_model is None:
+            raise ValueError("service_policy_imitation requires --service-model-path")
+        e = env.copy()
+        e.cfg.feature_mode = "service_v2"
+        e.cfg.decision_mode = "legacy"
+        obs = e.reset()
+        traj: List[Dict[str, Any]] = []
+        debug_steps: List[Dict[str, Any]] = []
+        total_cost = 0.0
+        done = False
+        for step in range(max_steps):
+            try:
+                action, policy_debug = _decode_service_policy_action(args, service_model, e, obs)
+                obs2, reward, done, info = e.step(action)
+            except Exception as exc:
+                action = _fallback_service_action(e, obs)
+                obs2, reward, done, info = e.step(action)
+                policy_debug = {"fallback": "reject_or_wait", "error": str(exc)}
+            total_cost += -float(reward)
+            traj.append({"obs": obs, "obs2": obs2, "action": action, "reward": float(reward), "info": info, "policy_debug": policy_debug})
+            if step < 30:
+                debug_steps.append({"step": int(step), "t": float(obs.get("t", 0.0)), "action": [int(action[0]), int(action[1])], "debug": policy_debug})
+            obs = obs2
+            if done:
+                break
+        if not done:
+            total_cost += 1_000_000.0
+            traj.append({"obs": obs, "action": ("TIMEOUT",), "reward": -1_000_000.0, "info": {"timeout": True}})
+        return float(total_cost), traj, {"done": bool(done), "steps": len(traj), "debug_steps": debug_steps}
     if method_name == "current_best_heuristic":
         return rollout_greedy_heuristic(env, mode="min_lateness_accept_all", max_steps=max_steps)
     raise ValueError(f"Unknown method_name={method_name}")
@@ -225,6 +411,7 @@ def evaluate_config(
     method_name: str,
     out_dir: Path,
     policy: Any,
+    service_model: Optional[ServicePolicy] = None,
 ) -> Dict[str, Any]:
     cfg = _env_config(args)
     open_instances = _load_open_instances(args)
@@ -244,7 +431,7 @@ def evaluate_config(
         sub_envs = _split_envs(base_env, int(args.resource_count), seed=inst_seed)
         for rid, env in enumerate(sub_envs):
             local_seed = inst_seed + 1000 * rid + sum(ord(c) for c in method_name)
-            cost, traj, method_debug = _rollout_method(args, env, method_name, policy, seed=local_seed)
+            cost, traj, method_debug = _rollout_method(args, env, method_name, policy, seed=local_seed, service_model=service_model)
             instance_id = idx * 100 + rid if len(sub_envs) > 1 else idx
             summary, orders, drone = analyze_episode(
                 env,
@@ -351,6 +538,7 @@ def _run_specs(
     policy: Any,
     specs: Sequence[Dict[str, Any]],
     methods: Sequence[str],
+    service_model: Optional[ServicePolicy] = None,
 ) -> List[Dict[str, Any]]:
     rows: List[Dict[str, Any]] = []
     for spec in specs:
@@ -363,7 +551,7 @@ def _run_specs(
                 row["method_name"] = method
                 row["recommendation"] = "anchor_locked_safety_reference"
             else:
-                overall = evaluate_config(exp_args, experiment_name=name, method_name=method, out_dir=out_dir, policy=policy)
+                overall = evaluate_config(exp_args, experiment_name=name, method_name=method, out_dir=out_dir, policy=policy, service_model=service_model)
                 row = _summary_row(experiment_name=name, method_name=method, args=exp_args, overall=overall)
                 if method == "raw_baseline":
                     cached_raw_row = dict(row)
@@ -521,10 +709,30 @@ def _filter_specs(specs: Sequence[Dict[str, Any]], spec_names: str) -> List[Dict
     return selected
 
 
+def _profile_specs(profile_name: str) -> List[Dict[str, Any]]:
+    if not str(profile_name or "").strip():
+        return []
+    return [get_business_env_profile(profile_name).to_spec()]
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Business constraint sensitivity analysis for 80/50 target.")
     p.add_argument("--output-dir", type=str, default="experiments/business_constraint_sensitivity_80_50")
     p.add_argument("--baseline-model-path", type=str, default="experiments/frozen_models_20260419/model_main_ep200.pt")
+    p.add_argument("--service-model-path", type=str, default="")
+    p.add_argument("--service-device", type=str, default="")
+    p.add_argument(
+        "--decode-mode",
+        type=str,
+        default="service_policy_raw",
+        choices=["service_policy_raw", "service_policy_lateness_guarded", "service_policy_teacher_like"],
+    )
+    p.add_argument("--lateness-risk-guard", type=_bool, default=True)
+    p.add_argument("--lateness-risk-threshold", type=float, default=1.0)
+    p.add_argument("--max-predicted-lateness", type=float, default=5.0)
+    p.add_argument("--min-route-confidence", type=float, default=0.70)
+    p.add_argument("--accept-risk-penalty", type=float, default=2.0)
+    p.add_argument("--on-time-priority-bonus", type=float, default=1.0)
     p.add_argument("--dataset-path", type=str, default="datasets/cvrplib")
     p.add_argument("--eval-split-file", type=str, default="datasets/cvrplib/splits/test.txt")
     p.add_argument("--eval-instances", type=int, default=30)
@@ -536,6 +744,13 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default="",
         help="Comma-separated experiment names to run, e.g. combined_D,combined_E or D,E.",
+    )
+    p.add_argument(
+        "--env-profile",
+        type=str,
+        default="",
+        choices=[""] + sorted(BUSINESS_ENV_PROFILES),
+        help=f"Run one named business environment profile instead of the sensitivity matrix. Choices: {profile_names()}.",
     )
     p.add_argument("--N", type=int, default=30)
     p.add_argument("--K", type=int, default=8)
@@ -621,10 +836,14 @@ def main() -> None:
     if unknown:
         raise ValueError(f"Unknown methods: {unknown}")
     policy = _load_policy(_set_policy_args(args))
-    specs = _filter_specs(build_specs(), args.specs)
+    service_model = None
+    if any(m == "service_policy_imitation" for m in methods):
+        device = torch.device(args.service_device if args.service_device else ("cuda" if torch.cuda.is_available() else "cpu"))
+        service_model = _load_service_policy(args.service_model_path, device)
+    specs = _profile_specs(args.env_profile) if args.env_profile else _filter_specs(build_specs(), args.specs)
     if not specs:
         raise ValueError("No experiment specs selected.")
-    rows = _run_specs(args, out_dir, policy, specs, methods)
+    rows = _run_specs(args, out_dir, policy, specs, methods, service_model=service_model)
     write_reports(out_dir, rows)
     print(json.dumps({"output_dir": str(out_dir.resolve()), "rows": len(rows)}, indent=2))
 
