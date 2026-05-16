@@ -1,0 +1,20 @@
+\begin{table}[htbp]
+\centering
+\caption{ServicePolicy performance under the default business environment.}
+\label{tab:service_policy_default_env}
+\begin{tabular}{llrrrrrrrl}
+\toprule
+Eval & Method & Acc. & On-time & Late & Avg. late & Max late & Energy & Distance & 80/50 \\
+\midrule
+20 & Raw baseline & 0.642 & 0.579 & 162 & 8.290 & 24.695 & 99.755 & 1596.379 & No \\
+20 & Oracle best on-time & 0.908 & 0.558 & 241 & 22.258 & 55.933 & 150.168 & 2392.441 & Yes \\
+20 & ServicePolicy & 0.818 & 0.552 & 220 & 22.456 & 59.263 & 117.163 & 1973.610 & Yes \\
+50 & Raw baseline & 0.593 & 0.545 & 405 & 8.625 & 25.731 & 234.704 & 3815.024 & No \\
+50 & Oracle best on-time & 0.915 & 0.519 & 660 & 24.146 & 66.110 & 396.888 & 6401.770 & Yes \\
+50 & ServicePolicy & 0.806 & 0.526 & 573 & 23.876 & 62.703 & 297.702 & 5091.444 & Yes \\
+100 & Raw baseline & 0.603 & 0.569 & 780 & 8.944 & 27.030 & 472.660 & 7660.213 & No \\
+100 & Oracle best on-time & 0.912 & 0.524 & 1301 & 23.621 & 66.222 & 781.492 & 12590.780 & Yes \\
+100 & ServicePolicy & 0.803 & 0.518 & 1161 & 22.817 & 65.606 & 589.882 & 10047.497 & Yes \\
+\bottomrule
+\end{tabular}
+\end{table}
