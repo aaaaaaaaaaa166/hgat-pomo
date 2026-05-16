@@ -1,0 +1,7 @@
+stage,key_change,eval_instances,acceptance_rate,on_time_rate,hard_constraint_violations,diagnosis
+original_sanity_B,"route/lateness loss, no outcome labels",20,0.951667,0.434326,0,"high acceptance, poor on-time"
+guarded_A,"lateness-guarded decode",20,0.898333,0.460111,0,"guard helped but labels still weak"
+augmented_threshold_1,"outcome labels, risky relabel lateness > 1",20,0.748333,0.576837,0,"on-time recovered, acceptance too conservative"
+severe8_assignment,"outcome labels, severe relabel lateness > 8, assignment loss",20,0.818333,0.551935,0,"passes 80/50"
+severe8_assignment,"same model",50,0.806000,0.526055,0,"stable pass"
+severe8_assignment,"same model",100,0.803333,0.518257,0,"stable pass"
