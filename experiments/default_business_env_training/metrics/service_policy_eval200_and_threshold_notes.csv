@@ -1,0 +1,8 @@
+model,decode,eval_instances,acceptance_rate,on_time_rate,hard_constraint_violations,status
+severe8_assignment,guarded_severe8,20,0.8183333333333334,0.5519348268839104,0,pass
+severe8_assignment,guarded_severe8,50,0.806,0.5260545905707196,0,pass
+severe8_assignment,guarded_severe8,100,0.8033333333333333,0.5182572614107884,0,pass
+severe8_assignment,guarded_severe8,200,0.7981666666666667,0.5266235122154939,0,acceptance_miss_by_0.001833
+severe8_assignment,raw,200,0.798,0.5265246449456976,0,acceptance_miss_by_0.002000
+severe8_assignment,loose_guarded,200,0.7976666666666666,0.5265357292101964,0,acceptance_miss_by_0.002333
+severe10_assignment,guarded_severe10,100,0.7943333333333333,0.4951741502308015,0,fail
