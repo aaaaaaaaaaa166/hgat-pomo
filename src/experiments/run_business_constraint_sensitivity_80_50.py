@@ -24,8 +24,21 @@ from src.evaluation.service_metrics import (
 from src.evaluation.time_window_inference import TimeWindowInferenceConfig
 from src.evaluation.v2_repair import V2RepairConfig, repair_trajectory
 from src.evaluation.v2_scheduler import V2SchedulerConfig
+from src.evaluation.v2_scheduler import rollout_v2_scheduler
 from src.evaluation.v2_sequence_scoring import V2SequenceScoreConfig
 from src.experiments.business_env_profiles import BUSINESS_ENV_PROFILES, get_business_env_profile, profile_names
+from src.experiments.eval_acceptance_insertion import (
+    INSERTION_METHODS,
+    _bump_reason,
+    _insertion_cfg,
+    _joint_beam_cfg,
+    _oracle_sched_cfg,
+    _raw_baseline_budget_for_instance,
+    _safe_deviation_decision,
+    rollout_guarded_ontime_beam,
+    rollout_joint_guarded_accept_ontime_route,
+    rollout_policy_accept_ontime_beam,
+)
 from src.experiments.run_target_80_50_feasibility import rollout_beam_oracle, rollout_greedy_heuristic
 from src.experiments.run_time_window_repair_experiments import (
     _env_config,
@@ -35,6 +48,11 @@ from src.experiments.run_time_window_repair_experiments import (
     rollout_inference,
 )
 from src.models.service_policy import ServicePolicy
+from src.schedulers.acceptance_insertion import rollout_acceptance_insertion
+from src.schedulers.joint_accept_route_beam import (
+    rollout_joint_accept_route_beam,
+    rollout_tail_risk_constrained_joint_beam,
+)
 
 
 METHODS = [
@@ -42,9 +60,8 @@ METHODS = [
     "v2_repair_only",
     "oracle_best_acceptance",
     "oracle_best_on_time",
-    "tail_risk_constrained_joint_beam",
     "service_policy_imitation",
-]
+] + [m for m in INSERTION_METHODS if m not in {"tail_risk_constrained_joint_beam"}] + ["tail_risk_constrained_joint_beam"]
 
 SUMMARY_FIELDS = [
     "experiment_name",
@@ -360,10 +377,105 @@ def _rollout_method(
         return rollout_beam_oracle(env, max_steps=max_steps, seed=int(seed))
     if method_name == "oracle_best_on_time":
         return rollout_greedy_heuristic(env, mode="regret_insertion", max_steps=max_steps)
-    if method_name == "tail_risk_constrained_joint_beam":
-        costs, trajs, logs = rollout_inference(policy, env, TimeWindowInferenceConfig(), K=int(args.K), max_steps=max_steps)
-        best_id = int(costs.argmin())
-        return float(costs[best_id]), trajs[best_id], {"anchor_locked": True, "source": "raw_baseline", "best_k": best_id, "logs": logs[best_id]}
+    if method_name in {
+        "beam_oracle_insertion",
+        "deadline_beam_oracle",
+        "conservative_deadline_beam",
+        "ontime_beam_oracle",
+    }:
+        return rollout_v2_scheduler(env, _oracle_sched_cfg(method_name, seed), max_steps=max_steps)
+    if method_name == "guarded_ontime_beam":
+        return rollout_guarded_ontime_beam(env, seed, max_steps=max_steps)
+    if method_name == "policy_accept_ontime_beam":
+        return rollout_policy_accept_ontime_beam(policy, env, seed, max_steps=max_steps)
+    if method_name == "joint_accept_route_beam":
+        return rollout_joint_accept_route_beam(env, _joint_beam_cfg(args), max_steps=max_steps)
+    if method_name == "joint_accept_route_beam_guarded":
+        return rollout_joint_guarded_accept_ontime_route(
+            env,
+            seed,
+            _joint_beam_cfg(args, guarded=True),
+            max_steps=max_steps,
+        )
+    if method_name in {"tail_risk_constrained_joint_beam", "tail_risk_constrained_joint_beam_safe_deviation"}:
+        budget, raw_budget_debug, raw_anchor_actions, raw_anchor_traj = _raw_baseline_budget_for_instance(
+            args,
+            policy,
+            env,
+            seed=seed,
+            instance_id=0,
+            max_steps=max_steps,
+        )
+        safe_deviation_mode = (
+            bool(getattr(args, "tail_risk_allow_safe_deviation", False))
+            or method_name == "tail_risk_constrained_joint_beam_safe_deviation"
+        )
+        if not safe_deviation_mode and not bool(getattr(args, "tail_risk_allow_anchor_deviation", False)):
+            return float(raw_budget_debug["raw_cost"]), raw_anchor_traj, {
+                "done": True,
+                "anchor_locked": True,
+                "anchor_policy": "raw_baseline_best_rollout",
+                "reason": "baseline anchor is used unless safe deviation is explicitly enabled",
+                "budget": budget.to_dict(),
+                "anchor_action_count": len(raw_anchor_actions),
+                "raw_budget_reference": raw_budget_debug,
+            }
+
+        anchor_seed = int(raw_budget_debug["raw_seed"])
+        np.random.seed(anchor_seed)
+        torch.manual_seed(anchor_seed)
+        candidate_cost, candidate_traj, candidate_debug = rollout_tail_risk_constrained_joint_beam(
+            env,
+            _joint_beam_cfg(args, guarded=True),
+            budget,
+            max_steps=max_steps,
+            anchor_actions=raw_anchor_actions,
+            allow_anchor_deviation=True,
+        )
+        if not safe_deviation_mode:
+            return float(candidate_cost), candidate_traj, {
+                **candidate_debug,
+                "safe_deviation_mode": False,
+                "legacy_anchor_deviation": True,
+                "raw_budget_reference": raw_budget_debug,
+            }
+
+        candidate_summary, candidate_orders, candidate_drone = analyze_episode(
+            env,
+            candidate_traj,
+            model_name=f"{method_name}_candidate",
+            instance_id=0,
+            objective_cost=candidate_cost,
+        )
+        candidate_hard, candidate_soft = _hard_soft(candidate_orders, [candidate_drone])
+        candidate_summary["hard_constraint_violations"] = int(candidate_hard)
+        candidate_summary["soft_time_window_violations"] = int(candidate_soft)
+        accepted_deviation, deviation_decision = _safe_deviation_decision(
+            args,
+            raw_budget_debug["raw_summary"],
+            candidate_summary,
+        )
+        if accepted_deviation:
+            return float(candidate_cost), candidate_traj, {
+                **candidate_debug,
+                "safe_deviation_mode": True,
+                "safe_deviation_selected": True,
+                "safe_deviation_decision": deviation_decision,
+                "raw_budget_reference": raw_budget_debug,
+            }
+        rejected_reasons: Dict[str, int] = {}
+        for reason in deviation_decision["reasons"]:
+            _bump_reason(rejected_reasons, reason)
+        return float(raw_budget_debug["raw_cost"]), raw_anchor_traj, {
+            **candidate_debug,
+            "safe_deviation_mode": True,
+            "safe_deviation_selected": False,
+            "anchor_locked": True,
+            "fallback_policy": "raw_baseline_best_rollout",
+            "safe_deviation_decision": deviation_decision,
+            "rejected_deviation_reasons": rejected_reasons,
+            "raw_budget_reference": raw_budget_debug,
+        }
     if method_name == "service_policy_imitation":
         if service_model is None:
             raise ValueError("service_policy_imitation requires --service-model-path")
@@ -396,6 +508,8 @@ def _rollout_method(
         return float(total_cost), traj, {"done": bool(done), "steps": len(traj), "debug_steps": debug_steps}
     if method_name == "current_best_heuristic":
         return rollout_greedy_heuristic(env, mode="min_lateness_accept_all", max_steps=max_steps)
+    if method_name in INSERTION_METHODS:
+        return rollout_acceptance_insertion(env, _insertion_cfg(method_name), max_steps=max_steps)
     raise ValueError(f"Unknown method_name={method_name}")
 
 
@@ -816,6 +930,48 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--turn-penalty", type=float, default=0.12)
     p.add_argument("--left-turn-penalty", type=float, default=0.08)
     p.add_argument("--u-turn-penalty", type=float, default=0.30)
+    p.add_argument("--severe-lateness-threshold", type=float, default=10.0)
+    p.add_argument("--joint-beam-size", type=int, default=16)
+    p.add_argument("--joint-lookahead-depth", type=int, default=3)
+    p.add_argument("--joint-candidate-top-k", type=int, default=10)
+    p.add_argument("--joint-max-expanded-states", type=int, default=5000)
+    p.add_argument("--joint-time-limit-seconds", type=float, default=2.0)
+    p.add_argument("--joint-accept-weight", type=float, default=20.0)
+    p.add_argument("--joint-on-time-weight", type=float, default=30.0)
+    p.add_argument("--joint-late-weight", type=float, default=40.0)
+    p.add_argument("--joint-lateness-weight", type=float, default=3.0)
+    p.add_argument("--joint-max-lateness-weight", type=float, default=8.0)
+    p.add_argument("--joint-energy-weight", type=float, default=0.08)
+    p.add_argument("--joint-distance-weight", type=float, default=0.04)
+    p.add_argument("--joint-severe-late-weight", type=float, default=0.0)
+    p.add_argument("--joint-hard-violation-weight", type=float, default=1000000.0)
+    p.add_argument("--joint-enable-dominance-pruning", type=_bool, default=True)
+    p.add_argument("--joint-disable-dominance-pruning", dest="joint_enable_dominance_pruning", action="store_false")
+    p.add_argument("--joint-guard-max-lateness-factor", type=float, default=1.05)
+    p.add_argument("--joint-guard-distance-factor", type=float, default=1.10)
+    p.add_argument("--joint-guard-energy-factor", type=float, default=1.10)
+    p.add_argument("--joint-guard-abs-lateness-slack", type=float, default=1e-6)
+    p.add_argument("--joint-guard-abs-distance-slack", type=float, default=1e-6)
+    p.add_argument("--joint-guard-abs-energy-slack", type=float, default=1e-6)
+    p.add_argument("--joint-guard-sim-max-steps", type=int, default=96)
+    p.add_argument("--tail-risk-max-lateness-ratio", type=float, default=1.02)
+    p.add_argument("--tail-risk-avg-lateness-ratio", type=float, default=1.02)
+    p.add_argument("--tail-risk-energy-ratio", type=float, default=1.03)
+    p.add_argument("--tail-risk-distance-ratio", type=float, default=1.03)
+    p.add_argument("--severe-lateness-hard-cap", type=float, default=0.0)
+    p.add_argument("--enable-baseline-anchored-budget", type=_bool, default=True)
+    p.add_argument("--disable-baseline-anchored-budget", dest="enable_baseline_anchored_budget", action="store_false")
+    p.add_argument("--tail-risk-allow-anchor-deviation", action="store_true")
+    p.add_argument("--tail-risk-allow-safe-deviation", action="store_true")
+    p.add_argument("--tail-risk-min-improvement", type=float, default=1e-6)
+    p.add_argument("--tail-risk-max-acceptance-drop", type=float, default=0.0)
+    p.add_argument("--tail-risk-max-on-time-drop", type=float, default=0.0)
+    p.add_argument("--tail-risk-max-avg-late-ratio", type=float, default=1.00)
+    p.add_argument("--tail-risk-max-max-late-ratio", type=float, default=1.00)
+    p.add_argument("--tail-risk-max-energy-ratio", type=float, default=1.01)
+    p.add_argument("--tail-risk-max-distance-ratio", type=float, default=1.01)
+    p.add_argument("--tail-risk-require-nontrivial-improvement", type=_bool, default=True)
+    p.add_argument("--tail-risk-disable-nontrivial-improvement", dest="tail_risk_require_nontrivial_improvement", action="store_false")
     args = p.parse_args()
     args.model_path = args.baseline_model_path
     args.response_window_label = "original"

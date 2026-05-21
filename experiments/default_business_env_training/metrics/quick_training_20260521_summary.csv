@@ -1,0 +1,7 @@
+kind,name,eval_seed,epochs,lr,accept_loss_weight,risky_accept_penalty,acceptance_rate,on_time_rate,late_orders,average_lateness,max_lateness,hard_constraint_violations,pass
+quick_train,quick_accept_calib_20260521,0,1,0.00005,0.45,0.8,0.787000,0.529860,1110,20.927412,67.409207,0,false
+quick_train,quick_accept_loose_20260521,0,1,0.00003,0.10,0.0,0.774000,0.546081,1054,21.140427,67.409207,0,false
+best_checkpoint,augmented_severe8_assignment_gate,0,,,,,0.803333,0.518257,1161,22.817444,65.605548,0,true
+best_checkpoint,augmented_severe8_assignment_gate,1,,,,,0.797333,0.530518,1123,22.571076,74.348933,0,false
+best_checkpoint,augmented_severe8_assignment_gate,2,,,,,0.788000,0.541455,1084,22.435019,67.991005,0,false
+aggregate,best_checkpoint_mean_std,,,,,,0.796222,0.530077,,,,,
